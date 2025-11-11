@@ -91,6 +91,11 @@ class TopicStore:
         smoothing: float = 0.5,
         min_transport_mass: float = 1e-3,
         min_best_ratio: float = 0.5,
+        # Background topic filtering (pre-UOT)
+        filter_background: bool = True,
+        sparsity_threshold: float = 0.20,
+        topk_mass_threshold: Optional[float] = None,
+        topk: int = 50,
         # Gene handling
         expand_genes: bool = True,
         # Debug/analysis
@@ -129,30 +134,31 @@ class TopicStore:
                     matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
                     return matches[0]
             return None
+        # Always load embeddings (topic/gene) and derive topic-gene via dot product
         topic_path = _find_single_file(topic_pat)
         if topic_path is None:
-            raise FileNotFoundError(f"Cannot find topic embeddings for dataset={dataset_name} under {results_dir}/topic_embedding")
+            raise FileNotFoundError(
+                f"Cannot find topic embeddings for dataset={dataset_name} under {results_dir}/topic_embedding"
+            )
         with open(topic_path, "rb") as f:
             topic_embeddings = pickle.load(f)
         topic_embeddings = np.asarray(topic_embeddings, dtype=np.float32)
 
         gene_path = _find_single_file(gene_pat)
         if gene_path is None:
-            raise FileNotFoundError(f"Cannot find gene embeddings for dataset={dataset_name} under {results_dir}/gene_embedding")
+            raise FileNotFoundError(
+                f"Cannot find gene embeddings for dataset={dataset_name} under {results_dir}/gene_embedding"
+            )
         with open(gene_path, "rb") as f:
             gene_embeddings = pickle.load(f)
         gene_embeddings = np.asarray(gene_embeddings, dtype=np.float32)
 
-        # Try to load persisted gene_names from training; fallback to adata
+        # Try to load persisted gene_names from training; fallback later based on shapes
         gene_names_path = _find_single_file(gene_names_pat)
         new_gene_names: Optional[List[str]] = None
         if gene_names_path is not None:
             with open(gene_names_path, "rb") as f:
                 new_gene_names = list(pickle.load(f))
-        if new_gene_names is None:
-            # Fallback: anonymous gene names based on embedding rows (less ideal)
-            G = int(gene_embeddings.shape[0])
-            new_gene_names = [f"GENE_{i}" for i in range(G)]
 
         # Compute topic-gene via dot product
         if topic_embeddings.ndim == 1:
@@ -177,6 +183,54 @@ class TopicStore:
         new_embeddings = np.asarray(new_embeddings, dtype=np.float32)
         if new_embeddings.ndim == 1:
             new_embeddings = new_embeddings[None, :]
+        # Fallback: anonymous gene names based on available shapes if not provided
+        if new_gene_names is None:
+            if gene_embeddings is not None:
+                G = int(gene_embeddings.shape[0])
+            else:
+                G = int(new_embeddings.shape[1])
+            new_gene_names = [f"GENE_{i}" for i in range(G)]
+
+        # Optional: filter background (dense) topics before alignment
+        original_K = new_embeddings.shape[0]
+        keep_idx = np.arange(original_K, dtype=int)
+        filtered_idx: List[int] = []
+        if filter_background and original_K > 0:
+            X = np.clip(new_embeddings, 0.0, None)
+            row_sum = X.sum(axis=1, keepdims=True)
+            eps = 1e-12
+            # Identify zero rows to avoid division artifacts
+            zero_rows = (row_sum <= eps).reshape(-1)
+            P = X / np.maximum(row_sum, eps)
+            # Hoyer sparsity
+            G = P.shape[1]
+            L1 = np.sum(P, axis=1)
+            L2 = np.sqrt(np.sum(P * P, axis=1) + 1e-20)
+            sqrtG = float(np.sqrt(G)) if G > 1 else 1.0
+            # For zero rows, force sparsity=0 (drop)
+            hoyer = (sqrtG - (L1 / L2)) / (sqrtG - 1.0 + 1e-12) if sqrtG > 1.0 else np.zeros_like(L2)
+            hoyer[zero_rows] = 0.0
+            keep = hoyer >= float(sparsity_threshold)
+            # Optional top-k mass gate
+            if topk_mass_threshold is not None and float(topk_mass_threshold) > 0.0 and G > 0:
+                k_eff = int(max(1, min(topk, G)))
+                # Sum of largest k entries per row
+                # Use partition for efficiency
+                part = np.partition(P, kth=G - k_eff, axis=1)
+                topk_mass = np.sum(part[:, -k_eff:], axis=1)
+                keep &= (topk_mass >= float(topk_mass_threshold))
+
+            keep_idx = np.where(keep)[0]
+            filtered_idx = [int(i) for i in np.where(~keep)[0]]
+            if keep_idx.size == 0:
+                # Nothing to add or match; early exit
+                out = {"matched": [], "added": [], "assigned_ids": [], "store_size": self.size, "filtered": filtered_idx}
+                if return_coupling:
+                    out["coupling"] = None
+                return out
+            new_embeddings = new_embeddings[keep_idx]
+            if new_weights is not None:
+                new_weights = np.asarray(new_weights)[keep_idx]
 
         # If store empty: add all directly
         if self.size == 0 and self.dim == 0:
@@ -190,7 +244,11 @@ class TopicStore:
                 assigned.append(new_id)
                 self.topic_ids.append(new_id)
                 self.meta.append(TopicMeta(first_dataset=dataset_name, last_dataset=dataset_name, match_count=1))
-            out = {"matched": [], "added": list(range(new_embeddings.shape[0])), "assigned_ids": assigned, "store_size": self.size}
+            # 'added' should refer to original topic indices
+            added_orig = [int(i) for i in keep_idx]
+            out = {"matched": [], "added": added_orig, "assigned_ids": assigned, "store_size": self.size}
+            if filter_background:
+                out["filtered"] = filtered_idx
             if return_coupling:
                 out["coupling"] = None
             return out
@@ -240,38 +298,44 @@ class TopicStore:
         matched_pairs: List[Tuple[int, int]] = []
         to_update_idx: List[int] = []
         to_update_vec: List[np.ndarray] = []
-        to_add: List[int] = []
+        # Maintain both relative and original indices for additions
+        to_add_rel: List[int] = []  # indices into new_norm
+        to_add_orig: List[int] = []  # original topic indices before filtering
 
         for j in range(new_norm.shape[0]):
             total = mass_new[j]
             if total <= min_transport_mass:
-                to_add.append(j)
+                to_add_rel.append(j)
+                to_add_orig.append(int(keep_idx[j]))
                 continue
             col = coupling[:, j]
             i_best = int(np.argmax(col))
             best = float(col[i_best])
             ratio = best / float(total + 1e-12)
             if ratio < min_best_ratio:
-                to_add.append(j)
+                to_add_rel.append(j)
+                to_add_orig.append(int(keep_idx[j]))
             else:
-                matched_pairs.append((i_best, j))
+                matched_pairs.append((i_best, int(keep_idx[j])))
                 to_update_idx.append(i_best)
                 to_update_vec.append(bary[j])
 
         if to_update_idx:
             self.update_topics(to_update_idx, np.stack(to_update_vec), dataset_name=dataset_name, alpha=float(np.clip(smoothing, 0.0, 1.0)))
         assigned_ids: List[str] = []
-        if to_add:
+        if to_add_rel:
             # Append unmatched new topics
-            base = new_norm[to_add]
+            base = new_norm[to_add_rel]
             self.store_embeddings = np.vstack([self.store_embeddings, base])
-            for _ in range(len(to_add)):
+            for _ in range(len(to_add_rel)):
                 new_id = f"{id_prefix}{len(self.topic_ids)}"
                 assigned_ids.append(new_id)
                 self.topic_ids.append(new_id)
                 self.meta.append(TopicMeta(first_dataset=dataset_name, last_dataset=dataset_name, match_count=1))
 
-        out = {"matched": matched_pairs, "added": to_add, "assigned_ids": assigned_ids, "store_size": self.size}
+        out = {"matched": matched_pairs, "added": to_add_orig, "assigned_ids": assigned_ids, "store_size": self.size}
+        if filter_background:
+            out["filtered"] = filtered_idx
         if return_coupling:
             out["coupling"] = coupling
         return out

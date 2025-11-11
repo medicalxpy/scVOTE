@@ -212,7 +212,7 @@ class GenePTAligner:
             print(f"  其他基因 ({len(other_genes)}个): {other_genes[:10]}{'...' if len(other_genes) > 10 else ''}")
 
 
-def load_filtered_genes_from_training_result() -> List[str]:
+def load_filtered_genes_from_training_result(datasetname) -> List[str]:
     """
     从训练结果中获取过滤后的基因列表
     通过分析Wang数据集和GenePT的交集得到实际使用的基因
@@ -223,7 +223,7 @@ def load_filtered_genes_from_training_result() -> List[str]:
     import scanpy as sc
     
     # 加载原始数据
-    adata = sc.read_h5ad('/root/autodl-tmp/scFastopic/data/Wang.h5ad')
+    adata = sc.read_h5ad(f'/root/autodl-tmp/scFastopic/data/{datasetname}.h5ad')
     wang_genes = list(adata.var_names)
     
     # 加载GenePT数据获取共同基因

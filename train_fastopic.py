@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-FASTopic训练脚本
-使用预提取的cell embeddings和原始adata训练scFASTopic模型
-"""
 import argparse
 import numpy as np
 import pandas as pd
@@ -18,7 +14,6 @@ warnings.filterwarnings('ignore')
 import scanpy as sc
 
 
-# 使用自定义的utils函数
 def save_matrices(matrices, dataset_name, n_topics, output_dir):
     """保存矩阵到指定的子目录"""
     base_output_dir = Path(output_dir)
@@ -50,13 +45,37 @@ def save_matrices(matrices, dataset_name, n_topics, output_dir):
     
     return saved_files
 def validate_matrices(matrices):
-    """验证矩阵形状和内容"""
+    """验证矩阵形状和内容
+
+    允许非数组类型的工件，例如 `gene_names`（list[str]）。
+    仅对NumPy数组/张量进行`.size`检查。
+    """
     try:
         for name, matrix in matrices.items():
             if matrix is None:
                 print(f"⚠️ Warning: {name} is None")
                 return False
-            if matrix.size == 0:
+            # Special-case: gene_names is a list of strings
+            if name == 'gene_names':
+                if not isinstance(matrix, (list, tuple)):
+                    print(f"⚠️ Warning: gene_names should be a list/tuple, got {type(matrix)}")
+                    return False
+                if len(matrix) == 0:
+                    print("⚠️ Warning: gene_names is empty")
+                    return False
+                continue
+            # NumPy arrays or torch tensors
+            try:
+                size = matrix.size  # numpy array / torch tensor
+            except Exception:
+                # Fallback: try to convert to numpy array for size check
+                try:
+                    arr = np.asarray(matrix)
+                    size = arr.size
+                except Exception as _:
+                    print(f"⚠️ Warning: {name} has unsupported type {type(matrix)}")
+                    return False
+            if size == 0:
                 print(f"⚠️ Warning: {name} is empty")
                 return False
         return True
@@ -83,6 +102,15 @@ class FastopicConfig:
     filter_genept: bool = True
     patience: int = 10
     min_delta: float = 1e-4
+    # Structural alignment (Laplacian + CKA)
+    align_enable: bool = True
+    align_alpha: float = 1e-3
+    align_beta: float = 1e-3
+    align_knn_k: int = 48
+    align_cka_sample_n: int = 2048
+    align_max_kernel_genes: int = 4096
+    # Legacy GenePT contrastive loss weight
+    genept_loss_weight: float = 0.0
 
 
 def parse_args():
@@ -127,6 +155,24 @@ def parse_args():
     parser.add_argument('--no_genept_filter', action='store_true',
                        help='Disable GenePT gene filtering')
     
+    # Structural alignment options
+    parser.add_argument('--no_align', action='store_true',
+                       help='Disable structural alignment (Laplacian + CKA)')
+    parser.add_argument('--align_alpha', type=float, default=1e-3,
+                       help='Weight for Laplacian alignment loss')
+    parser.add_argument('--align_beta', type=float, default=1e-3,
+                       help='Weight for CKA alignment loss')
+    parser.add_argument('--align_knn_k', type=int, default=48,
+                       help='k for cosine kNN graph on reference embeddings')
+    parser.add_argument('--align_cka_sample_n', type=int, default=2048,
+                       help='Subsample size for CKA computation')
+    parser.add_argument('--align_max_kernel_genes', type=int, default=4096,
+                       help='Cap for kernel template size to control memory')
+    
+    # Legacy GenePT contrastive alignment weight (kept for compatibility; default 0)
+    parser.add_argument('--genept_loss_weight', type=float, default=0.0,
+                       help='Weight for legacy GenePT contrastive alignment loss')
+    
     return parser.parse_args()
 
 
@@ -146,6 +192,13 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         seed=args.seed,
         filter_genept=not args.no_genept_filter,
         patience=args.patience,
+        align_enable=not args.no_align,
+        align_alpha=args.align_alpha,
+        align_beta=args.align_beta,
+        align_knn_k=args.align_knn_k,
+        align_cka_sample_n=args.align_cka_sample_n,
+        align_max_kernel_genes=args.align_max_kernel_genes,
+        genept_loss_weight=args.genept_loss_weight,
     )
 
 
@@ -209,6 +262,28 @@ def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool
                 if verbose:
                     print("⚠️ 没有与GenePT共有的基因，跳过基因过滤")
     
+    # 选择高变基因（HVGs）——在训练前将基因数限制为前5000个
+    # try:
+    #     # 将当前矩阵作为counts层，确保HVG在原始计数上计算（与seurat_v3一致）
+    #     if 'counts' not in adata.layers:
+    #         # 稀疏则保持稀疏类型，避免不必要的内存拷贝
+    #         adata.layers['counts'] = adata.X.copy()
+    #     n_top = min(5000, adata.n_vars)
+    #     if n_top > 0:
+    #         sc.pp.highly_variable_genes(
+    #             adata,
+    #             n_top_genes=n_top,
+    #             flavor='seurat_v3',
+    #             layer='counts',
+    #         )
+    #         # 仅保留HVGs
+    #         adata = adata[:, adata.var.highly_variable].copy()
+    #         if verbose:
+    #             print(f"🔎 HVG选择: 选取前 {n_top} 个高变基因，当前基因数={adata.n_vars}")
+    # except Exception as e:
+    #     if verbose:
+    #         print(f"⚠️ HVG选择失败，继续后续流程: {e}")
+
     if verbose:
         print(f"最终数据维度: {adata.shape}")
     
@@ -316,6 +391,13 @@ def train_fastopic_model(
         DT_alpha=config.DT_alpha,
         TW_alpha=config.TW_alpha,
         theta_temp=config.theta_temp,
+        align_enable=config.align_enable,
+        align_alpha=config.align_alpha,
+        align_beta=config.align_beta,
+        align_knn_k=config.align_knn_k,
+        align_cka_sample_n=config.align_cka_sample_n,
+        align_max_kernel_genes=config.align_max_kernel_genes,
+        genept_loss_weight=config.genept_loss_weight,
         verbose=verbose,
         log_interval=10,
         low_memory=False,
@@ -351,14 +433,29 @@ def train_fastopic_model(
     from scipy.stats import entropy
     
     # Shannon熵（衡量topic分布的均匀性）
-    topic_weights = theta.mean(axis=0)
+    # 对 theta 做数值清理，避免 NaN/Inf 导致评估为 NaN
+    theta_sane = np.nan_to_num(theta, nan=0.0, posinf=0.0, neginf=0.0)
+    # 行归一化，确保每个细胞的主题分布和为1；空行则设为均匀分布
+    row_sum = theta_sane.sum(axis=1, keepdims=True)
+    if row_sum.ndim == 1:
+        row_sum = row_sum.reshape(-1, 1)
+    zero_rows = (row_sum <= 0)
+    if np.any(zero_rows):
+        theta_sane[zero_rows[:, 0]] = 1.0 / max(1, theta_sane.shape[1])
+        row_sum = theta_sane.sum(axis=1, keepdims=True)
+    theta_sane = theta_sane / np.maximum(row_sum, 1e-12)
+
+    topic_weights = theta_sane.mean(axis=0)
+    # 归一化到概率分布，防止极小负数或精度误差
+    topic_weights = np.clip(topic_weights, 0.0, None)
+    topic_weights = topic_weights / np.maximum(topic_weights.sum(), 1e-12)
     shannon_entropy = entropy(topic_weights + 1e-12, base=2)
     
     # 有效topic数量
     effective_topics = 2**shannon_entropy
     
     # 主导topic占比
-    max_topic_weight = topic_weights.max()
+    max_topic_weight = topic_weights.max() if topic_weights.size else 0.0
     dominant_topic_ratio = max_topic_weight * 100
     
     results = {

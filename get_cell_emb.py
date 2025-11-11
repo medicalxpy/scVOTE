@@ -38,13 +38,13 @@ class EmbeddingConfig:
     batch_key: Optional[str] = None
     labels_key: Optional[str] = None
     n_latent: int = 30
-    n_hidden: int = 128
+    n_hidden: int = 256
     n_layers: int = 2
     dropout_rate: float = 0.1
     gene_likelihood: str = "zinb"
     learning_rate: float = 1e-3
     max_epochs: int = 1000
-    batch_size: int = 128
+    batch_size: int = 256
     early_stopping: bool = True
     early_stopping_patience: int = 20
     check_val_every_n_epoch: int = 1

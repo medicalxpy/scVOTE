@@ -2,10 +2,14 @@
 /result_scETM
 visualization
 *.log
-*.md
+AGENTS.md
 Geneformer
 data
 GenePT_emebdding_v2
 __pycache__/
 */__pycache__/
 **/__pycache__/
+.numba_cache
+evaluation-2025.ipynb
+alignmnet-inform
+start.sh

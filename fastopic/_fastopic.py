@@ -8,6 +8,7 @@ import warnings
 
 from ._ETP import ETP
 from ._model_utils import pairwise_euclidean_distance
+from ._alignment import GeneAlignmentRef, AlignmentConfig
 
 
 
@@ -20,7 +21,15 @@ class fastopic(nn.Module):
                  genept_proj_dim: int = 512,
                  genept_proj_hidden: int = 1024,
                  genept_temperature: float = 0.1,
-                 genept_loss_weight: float = 1e-4
+                 genept_loss_weight: float = 0.0,
+                 # Structural alignment (Laplacian + CKA)
+                 align_enable: bool = True,
+                 align_alpha: float = 1e-3,
+                 align_beta: float = 1e-3,
+                 align_knn_k: int = 48,
+                 align_rbf_quantiles: tuple = (0.1, 0.3, 0.6, 0.9),
+                 align_cka_sample_n: int = 2048,
+                 align_max_kernel_genes: int = 4096,
                 ):
         super().__init__()
 
@@ -32,12 +41,21 @@ class fastopic(nn.Module):
         self.genept_proj_hidden = genept_proj_hidden
         self.genept_temperature = genept_temperature
         self.genept_loss_weight = genept_loss_weight
+        # Structural alignment config
+        self.align_enable = align_enable
+        self.align_alpha = align_alpha
+        self.align_beta = align_beta
+        self.align_knn_k = align_knn_k
+        self.align_rbf_quantiles = align_rbf_quantiles
+        self.align_cka_sample_n = align_cka_sample_n
+        self.align_max_kernel_genes = align_max_kernel_genes
 
         self.epsilon = 1e-12
         self.word_projector = None
         self.genept_projector = None
         self._genept_embeddings = None
         self._gene_alignment_mask = None
+        self._align_ref = None
 
     def init(self,
              vocab_size: int,
@@ -91,7 +109,7 @@ class fastopic(nn.Module):
         # 保存vocab_size用于计算权重
         self.vocab_size = vocab_size
 
-        # 保存词汇表用于GenePT对齐
+        # 保存词汇表用于GenePT/结构对齐
         self._vocab = vocab
 
         if not _fitted or self.word_projector is None:
@@ -99,6 +117,21 @@ class fastopic(nn.Module):
 
         self.DT_ETP = ETP(self.DT_alpha, init_b_dist=self.topic_weights)
         self.TW_ETP = ETP(self.TW_alpha, init_b_dist=self.word_weights)
+
+        # Build reference for structural alignment if enabled and vocab available
+        try:
+            if self.align_enable and self._vocab is not None:
+                cfg = AlignmentConfig(
+                    knn_k=int(self.align_knn_k),
+                    rbf_quantiles=tuple(self.align_rbf_quantiles),
+                    cka_sample_n=int(self.align_cka_sample_n),
+                    max_kernel_genes=int(self.align_max_kernel_genes),
+                    random_state=42,
+                )
+                genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+                self._align_ref = GeneAlignmentRef(self._vocab, genept_path, config=cfg)
+        except Exception as e:
+            print(f"⚠️ 构建结构对齐引用失败: {e}")
 
     def get_transp_DT(self, doc_embeddings):
         topic_embeddings = self.topic_embeddings.detach().to(doc_embeddings.device)
@@ -160,10 +193,19 @@ class fastopic(nn.Module):
         recon = torch.matmul(theta, beta)
         loss_DSR = -(train_bow * (recon + self.epsilon).log()).sum(axis=1).mean()
         
-        # 添加GenePT对齐损失
+        # 添加结构对齐损失（Laplacian + CKA）
+        loss_lap, loss_cka = self._compute_struct_alignment_losses()
+
+        # 保留原有GenePT对比对齐损失
         loss_genept_alignment = self._compute_genept_alignment_loss()
 
-        loss = loss_DSR + 1e-2 * loss_ETP + self.genept_loss_weight * loss_genept_alignment
+        loss = (
+            loss_DSR
+            + 1e-2 * loss_ETP
+            + self.align_alpha * loss_lap
+            + self.align_beta * loss_cka
+            + self.genept_loss_weight * loss_genept_alignment
+        )
 
         rst_dict = {
             'loss': loss,
@@ -172,6 +214,8 @@ class fastopic(nn.Module):
             'loss_DT': loss_DT,
             'loss_TW': loss_TW,
             'loss_genept_alignment': loss_genept_alignment,
+            'loss_lap': loss_lap,
+            'loss_cka': loss_cka,
         }
 
         return rst_dict
@@ -220,6 +264,27 @@ class fastopic(nn.Module):
         alignment_loss = 0.5 * (loss_i + loss_j)
 
         return alignment_loss
+
+    def _compute_struct_alignment_losses(self):
+        """
+        Compute Laplacian and CKA losses using reference structures from GenePT.
+        Returns a tuple (loss_lap, loss_cka).
+        """
+        if not self.align_enable or self._align_ref is None:
+            dev = self.word_embeddings.device
+            z = torch.tensor(0.0, device=dev)
+            return z, z
+        try:
+            loss_lap = self._align_ref.laplacian_loss(self.word_embeddings)
+        except Exception as e:
+            print(f"⚠️ Laplacian对齐损失计算失败: {e}")
+            loss_lap = torch.tensor(0.0, device=self.word_embeddings.device)
+        try:
+            loss_cka = self._align_ref.cka_loss(self.word_embeddings)
+        except Exception as e:
+            print(f"⚠️ CKA对齐损失计算失败: {e}")
+            loss_cka = torch.tensor(0.0, device=self.word_embeddings.device)
+        return loss_lap, loss_cka
     
     def _load_genept_embeddings(self):
         """

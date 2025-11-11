@@ -27,6 +27,15 @@ class FASTopic:
         DT_alpha: float = 3.0,
         TW_alpha: float = 2.0,
         theta_temp: float = 1.0,
+        # Structural alignment (Laplacian + CKA)
+        align_enable: bool = True,
+        align_alpha: float = 1e-3,
+        align_beta: float = 1e-3,
+        align_knn_k: int = 48,
+        align_cka_sample_n: int = 2048,
+        align_max_kernel_genes: int = 4096,
+        # Legacy GenePT contrastive alignment
+        genept_loss_weight: float = 0.0,
         low_memory: bool = False,
         low_memory_batch_size: int = None,
         verbose: bool = False,
@@ -55,7 +64,19 @@ class FASTopic:
 
         self.beta = None
         self.train_theta = None
-        self.model = fastopic(num_topics, theta_temp, DT_alpha, TW_alpha)
+        self.model = fastopic(
+            num_topics,
+            theta_temp,
+            DT_alpha,
+            TW_alpha,
+            genept_loss_weight=genept_loss_weight,
+            align_enable=align_enable,
+            align_alpha=align_alpha,
+            align_beta=align_beta,
+            align_knn_k=align_knn_k,
+            align_cka_sample_n=align_cka_sample_n,
+            align_max_kernel_genes=align_max_kernel_genes,
+        )
 
         self.log_interval = log_interval
         self.verbose = verbose
