@@ -111,6 +111,8 @@ class FastopicConfig:
     align_max_kernel_genes: int = 4096
     # Legacy GenePT contrastive loss weight
     genept_loss_weight: float = 0.0
+    # HVG selection for single training (0 disables)
+    n_top_genes: int = 0
 
 
 def parse_args():
@@ -144,6 +146,9 @@ def parse_args():
                        help='Topic-word alpha parameter')
     parser.add_argument('--theta_temp', type=float, default=2.0,
                        help='Temperature parameter')
+    # HVG selection (0 disables; apply during single training preprocessing)
+    parser.add_argument('--n_top_genes', type=int, default=0,
+                       help='Select top-N HVGs for training (0 to disable)')
     
     # Other options
     parser.add_argument('--seed', type=int, default=42,
@@ -199,13 +204,14 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         align_cka_sample_n=args.align_cka_sample_n,
         align_max_kernel_genes=args.align_max_kernel_genes,
         genept_loss_weight=args.genept_loss_weight,
+        n_top_genes=args.n_top_genes,
     )
 
 
 def load_genept_genes():
     """Load GenePT gene set."""
     try:
-        genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+        genept_path = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
         with open(genept_path, 'rb') as f:
             genept_dict = pickle.load(f)
         return set(genept_dict.keys())
@@ -213,7 +219,12 @@ def load_genept_genes():
         print(f"⚠️ Could not load GenePT gene list: {e}")
         return None
 
-def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool = True):
+def preprocess_adata(
+    adata_path: str,
+    verbose: bool = False,
+    filter_genept: bool = True,
+    n_top_genes: int = 0,
+):
     """
     Extract counts from adata and preprocess.
 
@@ -262,7 +273,20 @@ def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool
                 if verbose:
                     print("⚠️ No genes shared with GenePT; skip filtering")
     
-    # Optional HVG selection (disabled). Keep here for reference if needed.
+    # Optional HVG selection (default disabled)
+    if n_top_genes and n_top_genes > 0:
+        try:
+            sc.pp.highly_variable_genes(
+                adata,
+                n_top_genes=n_top_genes,
+                flavor="seurat_v3",
+            )
+            adata = adata[:, adata.var["highly_variable"]].copy()
+            if verbose:
+                print(f"🔎 HVG selection: kept top {adata.n_vars} genes")
+        except Exception as e:
+            if verbose:
+                print(f"⚠️ HVG selection failed ({e}); proceeding without HVG filter")
 
     if verbose:
         print(f"Final shape: {adata.shape}")
@@ -288,7 +312,13 @@ def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool
     return expression_matrix, gene_names
 
 
-def load_embeddings_and_expression(embedding_file: str, adata_path: str, verbose: bool = False, filter_genept: bool = True):
+def load_embeddings_and_expression(
+    embedding_file: str,
+    adata_path: str,
+    verbose: bool = False,
+    filter_genept: bool = True,
+    n_top_genes: int = 0,
+):
     """
     Load cell embeddings and the preprocessed expression matrix.
 
@@ -318,7 +348,12 @@ def load_embeddings_and_expression(embedding_file: str, adata_path: str, verbose
         print(f"✅ Cell embeddings: {cell_embeddings.shape}")
     
     # Preprocess adata
-    expression_matrix, gene_names = preprocess_adata(adata_path, verbose, filter_genept)
+    expression_matrix, gene_names = preprocess_adata(
+        adata_path=adata_path,
+        verbose=verbose,
+        filter_genept=filter_genept,
+        n_top_genes=n_top_genes,
+    )
     
     # Ensure matching cell counts
     n_cells_emb = cell_embeddings.shape[0]
@@ -530,13 +565,18 @@ def main():
         print(f"  Learning Rate: {config.learning_rate}")
         print(f"  Early stopping patience: {config.patience}")
         print(f"  GenePT gene filtering: {config.filter_genept}")
+        print(f"  HVG n_top_genes: {config.n_top_genes}")
         print(f"  Embedding file: {config.embedding_file}")
         print(f"  Adata file: {config.adata_path}")
     
     try:
         # Step 1: Load embeddings and preprocess expression matrix
         cell_embeddings, expression_matrix, gene_names = load_embeddings_and_expression(
-            config.embedding_file, config.adata_path, config.verbose, config.filter_genept
+            embedding_file=config.embedding_file,
+            adata_path=config.adata_path,
+            verbose=config.verbose,
+            filter_genept=config.filter_genept,
+            n_top_genes=config.n_top_genes,
         )
         
         # Step 2: Train model

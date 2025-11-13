@@ -224,11 +224,11 @@ def load_filtered_genes_from_training_result(datasetname) -> List[str]:
     import scanpy as sc
     
     # Load raw data
-    adata = sc.read_h5ad(f'/root/autodl-tmp/scFastopic/data/{datasetname}.h5ad')
+    adata = sc.read_h5ad(f'data/{datasetname}.h5ad')
     wang_genes = list(adata.var_names)
     
     # Load GenePT data and get common genes
-    genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+    genept_path = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
     with open(genept_path, 'rb') as f:
         genept_dict = pickle.load(f)
     genept_genes = set(genept_dict.keys())
@@ -246,7 +246,7 @@ def load_filtered_genes_from_training_result(datasetname) -> List[str]:
 
 def align_genept_for_notebook(topic_gene_matrix: np.ndarray, 
                                target_genes: List[str],
-                               genept_path: str = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle') -> Tuple[np.ndarray, List[str], Dict]:
+                               genept_path: str = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle') -> Tuple[np.ndarray, List[str], Dict]:
     """
     Main GenePT alignment function for notebooks.
 
@@ -327,7 +327,7 @@ def create_genept_aligned_dataframe(topic_gene_matrix: np.ndarray,
 
 if __name__ == "__main__":
     # Test code
-    genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+    genept_path = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
     
     # Get genes used in training
     filtered_genes = load_filtered_genes_from_training_result()

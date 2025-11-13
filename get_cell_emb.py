@@ -178,7 +178,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="scFASTopic cell embeddings via scVI")
     parser.add_argument("--input_data", required=True, help="Input .h5ad file path")
     parser.add_argument("--dataset_name", default="dataset", help="Dataset name")
-    parser.add_argument("--output_dir", default="scFastopic/results/cell_embedding", help="Output directory")
+    parser.add_argument("--output_dir", default="results/cell_embedding", help="Output directory")
     parser.add_argument("--max_cells", type=int, help="Max number of cells")
     parser.add_argument("--n_top_genes", type=int, default=2000, help="Number of highly variable genes")
     parser.add_argument("--batch_key", help="Batch column in AnnData")

@@ -70,7 +70,7 @@ class TopicStore:
         self,
         dataset_name: str,
         *,
-        results_dir: str = "scFastopic/results",
+        results_dir: str = "results",
         data_dir: str = "data",
         # ID and normalisation
         id_prefix: str = "T",

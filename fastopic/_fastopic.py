@@ -128,7 +128,7 @@ class fastopic(nn.Module):
                     max_kernel_genes=int(self.align_max_kernel_genes),
                     random_state=42,
                 )
-                genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+                genept_path = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
                 self._align_ref = GeneAlignmentRef(self._vocab, genept_path, config=cfg)
         except Exception as e:
             print(f"⚠️ Failed to build structural alignment reference: {e}")
@@ -292,7 +292,7 @@ class fastopic(nn.Module):
         Load GenePT gene embeddings and create an alignment mask.
         """
         try:
-            genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
+            genept_path = 'GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
             
             with open(genept_path, 'rb') as f:
                 genept_dict = pickle.load(f)
