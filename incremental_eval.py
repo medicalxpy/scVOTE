@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-Incremental merge evaluator for scFASTopic TopicStore.
-
-Given a list of trained dataset names and a results directory, this script:
-  - Loads or initializes a TopicStore
-  - Merges each dataset into the store (UOT alignment)
-  - After each merge, saves per-dataset evaluation payloads for matched and added topics:
-      * Matched: indices, store IDs, barycentric projections, before/after vectors,
-        aligned new topic vectors, transport best ratios, and cosine similarities.
-      * Added: indices, assigned IDs, appended embeddings, aligned new topic vectors.
-
-Usage example:
-  python incremental_eval.py \
-    --results_dir results \
-    --datasets PBMC4k_scVI PBMC8k_scVI PBMC12k_scVI \
-    --store_path results/topic_store/topic_store.pkl \
-    --out_dir results/topic_store/merge_eval
-"""
-
 import argparse
 import glob
 import os

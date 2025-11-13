@@ -1,12 +1,3 @@
-"""Topic Store utilities for scFASTopic.
-
-This module maintains a minimal global Topic Store and aligns topics across
-datasets at the gene level. For each dataset, we build a topic-gene matrix by
-multiplying topic embeddings with gene embeddings, then perform unbalanced
-optimal transport (UOT) alignment between the new topic-gene matrix and the
-store. Unmatched topics are appended; matched topics are EMA-merged.
-"""
-
 from __future__ import annotations
 
 import dataclasses

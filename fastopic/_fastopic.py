@@ -78,7 +78,7 @@ class fastopic(nn.Module):
         self.topic_embeddings = nn.Parameter(topic_embeddings)
         self.topic_weights = nn.Parameter(topic_weights)
 
-        # 初始化word embeddings - 使用随机初始化
+        # Initialize word embeddings with random values
         word_embeddings = F.normalize(nn.init.trunc_normal_(torch.empty(vocab_size, embed_size)))
         
         if _fitted:
@@ -106,10 +106,10 @@ class fastopic(nn.Module):
         self.word_embeddings = nn.Parameter(word_embeddings)
         self.word_weights = nn.Parameter(word_weights)
 
-        # 保存vocab_size用于计算权重
+        # Store vocab_size for weighting calculations
         self.vocab_size = vocab_size
 
-        # 保存词汇表用于GenePT/结构对齐
+        # Store vocabulary for GenePT/structural alignment
         self._vocab = vocab
 
         if not _fitted or self.word_projector is None:
@@ -131,7 +131,7 @@ class fastopic(nn.Module):
                 genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
                 self._align_ref = GeneAlignmentRef(self._vocab, genept_path, config=cfg)
         except Exception as e:
-            print(f"⚠️ 构建结构对齐引用失败: {e}")
+            print(f"⚠️ Failed to build structural alignment reference: {e}")
 
     def get_transp_DT(self, doc_embeddings):
         topic_embeddings = self.topic_embeddings.detach().to(doc_embeddings.device)
@@ -170,18 +170,18 @@ class fastopic(nn.Module):
         loss_DT, transp_DT = self.DT_ETP(doc_embeddings, self.topic_embeddings)
         loss_TW, transp_TW = self.TW_ETP(self.topic_embeddings, self.word_embeddings)
 
-        # 添加权重的损失计算
+        # Weighted ETP loss components
         num_cells = doc_embeddings.shape[0]
         dt_weight = (self.num_topics / num_cells) ** 0.5
         tw_weight = (self.vocab_size / self.num_topics) ** 0.5
         loss_ETP = dt_weight * loss_DT + tw_weight * loss_TW
         
-        # # 自动尺度平衡 - 计算距离矩阵来归一化损失
+        # # Auto scale balancing — compute distance matrices to normalize losses
         # from ._model_utils import pairwise_euclidean_distance
         # M_DT = pairwise_euclidean_distance(doc_embeddings, self.topic_embeddings)
         # M_TW = pairwise_euclidean_distance(self.topic_embeddings, self.word_embeddings)
         
-        # # 按距离尺度归一化损失，使DT和TW损失在相似的量级
+        # # Normalize by distance scales so DT/TW losses are comparable
         # loss_DT_normalized = loss_DT / M_DT.mean()
         # loss_TW_normalized = loss_TW / M_TW.mean()
         # loss_ETP = loss_DT_normalized + loss_TW_normalized
@@ -193,10 +193,10 @@ class fastopic(nn.Module):
         recon = torch.matmul(theta, beta)
         loss_DSR = -(train_bow * (recon + self.epsilon).log()).sum(axis=1).mean()
         
-        # 添加结构对齐损失（Laplacian + CKA）
+        # Add structural alignment losses (Laplacian + CKA)
         loss_lap, loss_cka = self._compute_struct_alignment_losses()
 
-        # 保留原有GenePT对比对齐损失
+        # Keep legacy GenePT contrastive alignment loss
         loss_genept_alignment = self._compute_genept_alignment_loss()
 
         loss = (
@@ -222,17 +222,18 @@ class fastopic(nn.Module):
     
     def _compute_genept_alignment_loss(self):
         """
-        计算GenePT对齐损失，约束学到的gene embedding与预训练GenePT embedding对齐
+        Compute GenePT alignment loss to align learned gene embeddings
+        with pretrained GenePT embeddings.
         """
-        # 如果没有词汇表信息，返回0损失
+        # If no vocabulary information, return zero loss
         if not hasattr(self, '_vocab') or self._vocab is None:
             return torch.tensor(0.0, device=self.word_embeddings.device)
         
-        # 延迟加载GenePT embeddings
+        # Lazy-load GenePT embeddings
         if not hasattr(self, '_genept_embeddings') or self._genept_embeddings is None:
             self._load_genept_embeddings()
         
-        # 如果加载失败或没有对齐的基因，返回0损失
+        # If loading failed or there are no aligned genes, return zero loss
         if self._genept_embeddings is None or self._gene_alignment_mask is None:
             return torch.tensor(0.0, device=self.word_embeddings.device)
         
@@ -277,18 +278,18 @@ class fastopic(nn.Module):
         try:
             loss_lap = self._align_ref.laplacian_loss(self.word_embeddings)
         except Exception as e:
-            print(f"⚠️ Laplacian对齐损失计算失败: {e}")
+            print(f"⚠️ Failed to compute Laplacian alignment loss: {e}")
             loss_lap = torch.tensor(0.0, device=self.word_embeddings.device)
         try:
             loss_cka = self._align_ref.cka_loss(self.word_embeddings)
         except Exception as e:
-            print(f"⚠️ CKA对齐损失计算失败: {e}")
+            print(f"⚠️ Failed to compute CKA alignment loss: {e}")
             loss_cka = torch.tensor(0.0, device=self.word_embeddings.device)
         return loss_lap, loss_cka
     
     def _load_genept_embeddings(self):
         """
-        加载GenePT基因嵌入并创建对齐掩码
+        Load GenePT gene embeddings and create an alignment mask.
         """
         try:
             genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
@@ -296,7 +297,7 @@ class fastopic(nn.Module):
             with open(genept_path, 'rb') as f:
                 genept_dict = pickle.load(f)
             
-            # 创建对齐列表和掩码
+            # Build aligned list and mask
             aligned_embeddings = []
             alignment_mask = []
             
@@ -309,17 +310,17 @@ class fastopic(nn.Module):
             if len(aligned_embeddings) > 0:
                 self._genept_embeddings = torch.stack(aligned_embeddings)
                 self._gene_alignment_mask = torch.tensor(alignment_mask, dtype=torch.long)
-                print(f"✅ GenePT对齐: {len(aligned_embeddings)}/{len(self._vocab)} 基因匹配")
+                print(f"✅ GenePT alignment: {len(aligned_embeddings)}/{len(self._vocab)} genes matched")
                 if self.genept_projector is None:
                     in_dim = self._genept_embeddings.shape[1]
                     self.genept_projector = self._build_projector(in_dim, self.genept_proj_dim)
             else:
                 self._genept_embeddings = None
                 self._gene_alignment_mask = None
-                print("⚠️ 没有基因能与GenePT对齐")
+                print("⚠️ No genes could be aligned with GenePT")
                 
         except Exception as e:
-            print(f"❌ 加载GenePT嵌入失败: {e}")
+            print(f"❌ Failed to load GenePT embeddings: {e}")
             self._genept_embeddings = None
             self._gene_alignment_mask = None
 

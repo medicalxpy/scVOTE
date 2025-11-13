@@ -15,10 +15,10 @@ import scanpy as sc
 
 
 def save_matrices(matrices, dataset_name, n_topics, output_dir):
-    """保存矩阵到指定的子目录"""
+    """Save matrices into their designated subdirectories."""
     base_output_dir = Path(output_dir)
     
-    # 定义矩阵类型到子目录的映射
+    # Map matrix types to subdirectories
     matrix_subdirs = {
         'cell_topic_matrix': 'cell_topic',
         'topic_gene_matrix': 'topic_gene', 
@@ -29,7 +29,7 @@ def save_matrices(matrices, dataset_name, n_topics, output_dir):
     
     saved_files = []
     for matrix_name, matrix in matrices.items():
-        # 创建对应的子目录
+        # Create subdirectory
         subdir = matrix_subdirs.get(matrix_name, matrix_name)
         matrix_output_dir = base_output_dir / subdir
         matrix_output_dir.mkdir(parents=True, exist_ok=True)
@@ -45,10 +45,10 @@ def save_matrices(matrices, dataset_name, n_topics, output_dir):
     
     return saved_files
 def validate_matrices(matrices):
-    """验证矩阵形状和内容
+    """Validate matrix shapes and content.
 
-    允许非数组类型的工件，例如 `gene_names`（list[str]）。
-    仅对NumPy数组/张量进行`.size`检查。
+    Allows non-array artifacts like `gene_names` (list[str]). Only checks
+    `.size` for NumPy arrays/torch tensors.
     """
     try:
         for name, matrix in matrices.items():
@@ -114,10 +114,10 @@ class FastopicConfig:
 
 
 def parse_args():
-    """解析命令行参数"""
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description='Train scFASTopic with pre-extracted cell embeddings')
     
-    # 输入文件参数
+    # Input files
     parser.add_argument('--embedding_file', type=str, required=True,
                        help='Path to cell embeddings pkl file')
     parser.add_argument('--adata_path', type=str, required=True,
@@ -125,11 +125,11 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='PBMC',
                        help='Dataset name')
     
-    # 输出参数
+    # Output options
     parser.add_argument('--output_dir', type=str, default='results',
                        help='Output directory')
     
-    # 模型参数
+    # Model options
     parser.add_argument('--n_topics', type=int, default=20,
                        help='Number of topics')
     parser.add_argument('--epochs', type=int, default=100,
@@ -137,7 +137,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.01,
                        help='Learning rate')
     
-    # FASTopic超参数
+    # FASTopic hyperparameters
     parser.add_argument('--DT_alpha', type=float, default=1.0,
                        help='Dirichlet-tree alpha parameter')
     parser.add_argument('--TW_alpha', type=float, default=1.0,
@@ -145,7 +145,7 @@ def parse_args():
     parser.add_argument('--theta_temp', type=float, default=2.0,
                        help='Temperature parameter')
     
-    # 其他参数
+    # Other options
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
     parser.add_argument('--quiet', action='store_true',
@@ -203,97 +203,77 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
 
 
 def load_genept_genes():
-    """加载GenePT基因列表"""
+    """Load GenePT gene set."""
     try:
         genept_path = '/root/autodl-tmp/scFastopic/GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle'
         with open(genept_path, 'rb') as f:
             genept_dict = pickle.load(f)
         return set(genept_dict.keys())
     except Exception as e:
-        print(f"⚠️ 无法加载GenePT基因列表: {e}")
+        print(f"⚠️ Could not load GenePT gene list: {e}")
         return None
 
 def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool = True):
     """
-    从adata中提取计数矩阵并进行预处理
-    
+    Extract counts from adata and preprocess.
+
     Args:
-        adata_path: 单细胞数据路径
-        verbose: 是否详细输出
-        filter_genept: 是否过滤到GenePT共有基因
-        
+        adata_path: Path to single-cell data (.h5ad).
+        verbose: Whether to print details.
+        filter_genept: Whether to filter to genes shared with GenePT.
+
     Returns:
-        expression_matrix: 预处理后的表达矩阵 (cells x genes)
-        gene_names: 基因名称列表
+        expression_matrix: Preprocessed expression matrix (cells x genes).
+        gene_names: List of gene names.
     """
     if verbose:
         print(f"📁 Loading adata: {adata_path}")
     
-    # 加载数据
+    # Load data
     adata = sc.read_h5ad(adata_path)
     
     if verbose:
-        print(f"原始数据维度: {adata.shape}")
+        print(f"Original shape: {adata.shape}")
     
-    # 简单过滤
-    # 过滤低质量细胞 (表达基因数 < 200)
+    # Simple filtering
+    # Filter low-quality cells (n_genes < 200)
     sc.pp.filter_cells(adata, min_genes=200)
     
-    # 过滤低表达基因 (在 < 3个细胞中表达)
+    # Filter lowly expressed genes (min_cells >= 3)
     sc.pp.filter_genes(adata, min_cells=3)
     
     if verbose:
-        print(f"过滤后数据维度: {adata.shape}")
+        print(f"After filtering: {adata.shape}")
     
-    # GenePT基因过滤
+    # GenePT gene filtering
     if filter_genept:
         genept_genes = load_genept_genes()
         if genept_genes is not None:
-            # 找到与GenePT共有的基因
+            # Find genes shared with GenePT
             current_genes = set(adata.var_names)
             common_genes = current_genes.intersection(genept_genes)
             
             if len(common_genes) > 0:
-                # 过滤到共有基因
+                # Filter to shared genes
                 adata = adata[:, list(common_genes)]
                 if verbose:
-                    print(f"🧬 GenePT基因过滤: {len(common_genes)}/{len(current_genes)} 基因保留")
+                    print(f"🧬 GenePT filtering: kept {len(common_genes)}/{len(current_genes)} genes")
             else:
                 if verbose:
-                    print("⚠️ 没有与GenePT共有的基因，跳过基因过滤")
+                    print("⚠️ No genes shared with GenePT; skip filtering")
     
-    # 选择高变基因（HVGs）——在训练前将基因数限制为前5000个
-    # try:
-    #     # 将当前矩阵作为counts层，确保HVG在原始计数上计算（与seurat_v3一致）
-    #     if 'counts' not in adata.layers:
-    #         # 稀疏则保持稀疏类型，避免不必要的内存拷贝
-    #         adata.layers['counts'] = adata.X.copy()
-    #     n_top = min(5000, adata.n_vars)
-    #     if n_top > 0:
-    #         sc.pp.highly_variable_genes(
-    #             adata,
-    #             n_top_genes=n_top,
-    #             flavor='seurat_v3',
-    #             layer='counts',
-    #         )
-    #         # 仅保留HVGs
-    #         adata = adata[:, adata.var.highly_variable].copy()
-    #         if verbose:
-    #             print(f"🔎 HVG选择: 选取前 {n_top} 个高变基因，当前基因数={adata.n_vars}")
-    # except Exception as e:
-    #     if verbose:
-    #         print(f"⚠️ HVG选择失败，继续后续流程: {e}")
+    # Optional HVG selection (disabled). Keep here for reference if needed.
 
     if verbose:
-        print(f"最终数据维度: {adata.shape}")
+        print(f"Final shape: {adata.shape}")
     
-    # 标准化到每个细胞总计数为1e4
+    # Normalize total counts to 1 per cell
     sc.pp.normalize_total(adata, target_sum=1)
     
-    # log1p变换
+    # log1p transform
     sc.pp.log1p(adata)
     
-    # 获取处理后的矩阵
+    # Get processed matrix
     if hasattr(adata.X, 'toarray'):
         expression_matrix = adata.X.toarray()
     else:
@@ -302,32 +282,32 @@ def preprocess_adata(adata_path: str, verbose: bool = False, filter_genept: bool
     gene_names = adata.var_names.tolist()
     
     if verbose:
-        print(f"✅ 预处理完成: {expression_matrix.shape}")
-        print(f"✅ 基因数量: {len(gene_names)}")
+        print(f"✅ Preprocessing complete: {expression_matrix.shape}")
+        print(f"✅ Gene count: {len(gene_names)}")
     
     return expression_matrix, gene_names
 
 
 def load_embeddings_and_expression(embedding_file: str, adata_path: str, verbose: bool = False, filter_genept: bool = True):
     """
-    加载cell embeddings和预处理后的表达矩阵
-    
+    Load cell embeddings and the preprocessed expression matrix.
+
     Args:
-        embedding_file: cell embeddings文件路径
-        adata_path: 原始adata路径
-        verbose: 是否详细输出
-        filter_genept: 是否过滤到GenePT共有基因
-        
+        embedding_file: Path to cell embeddings (.pkl).
+        adata_path: Path to original adata (.h5ad).
+        verbose: Whether to print details.
+        filter_genept: Whether to filter to genes shared with GenePT.
+
     Returns:
-        cell_embeddings: Cell embeddings矩阵
-        expression_matrix: 预处理后的表达矩阵
-        gene_names: 基因名称列表
+        cell_embeddings: Array of cell embeddings.
+        expression_matrix: Preprocessed expression matrix.
+        gene_names: List of gene names.
     """
     if verbose:
         print("📥 Loading embeddings and preprocessing expression data")
         print("="*60)
     
-    # 加载cell embeddings
+    # Load cell embeddings
     if verbose:
         print(f"📁 Loading cell embeddings: {embedding_file}")
     
@@ -337,18 +317,18 @@ def load_embeddings_and_expression(embedding_file: str, adata_path: str, verbose
     if verbose:
         print(f"✅ Cell embeddings: {cell_embeddings.shape}")
     
-    # 预处理adata
+    # Preprocess adata
     expression_matrix, gene_names = preprocess_adata(adata_path, verbose, filter_genept)
     
-    # 确保细胞数量匹配
+    # Ensure matching cell counts
     n_cells_emb = cell_embeddings.shape[0]
     n_cells_exp = expression_matrix.shape[0]
     
     if n_cells_emb != n_cells_exp:
         min_cells = min(n_cells_emb, n_cells_exp)
         if verbose:
-            print(f"⚠️ 细胞数量不匹配 (embedding: {n_cells_emb}, expression: {n_cells_exp})")
-            print(f"使用前 {min_cells} 个细胞")
+            print(f"⚠️ Cell count mismatch (embedding: {n_cells_emb}, expression: {n_cells_exp})")
+            print(f"Using first {min_cells} cells")
         
         cell_embeddings = cell_embeddings[:min_cells]
         expression_matrix = expression_matrix[:min_cells]
@@ -365,24 +345,24 @@ def train_fastopic_model(
     verbose: bool = False,
 ):
     """
-    训练scFASTopic模型
-    
+    Train the scFASTopic model.
+
     Args:
-        cell_embeddings: Cell embeddings矩阵
-        expression_matrix: 预处理后的表达矩阵
-        gene_names: 基因名称列表
-        config: 配置参数
-        verbose: 是否详细输出
-        
+        cell_embeddings: Cell embeddings array.
+        expression_matrix: Preprocessed expression matrix.
+        gene_names: List of gene names.
+        config: Training/config parameters.
+        verbose: Verbose output flag.
+
     Returns:
-        results: 训练结果字典
-        training_time: 训练时间
+        results: Training result dictionary.
+        training_time: Elapsed training time (seconds).
     """
     if verbose:
         print("\n🤖 Training scFASTopic model")
         print("="*60)
     
-    # 使用真正的FASTopic
+    # Use the FASTopic implementation
     from fastopic import FASTopic
     
     model = FASTopic(
@@ -404,15 +384,15 @@ def train_fastopic_model(
         low_memory_batch_size=8000
     )
     
-    # 训练模型
+    # Train model
     start_time = time.time()
     if verbose:
         print(f"🔥 Training with {config.n_topics} topics for {config.epochs} epochs...")
     
-    # 将表达矩阵转换为稀疏矩阵作为BOW输入
+    # Convert expression matrix to sparse BOW input
     expression_bow = sp.csr_matrix(expression_matrix)
     
-    # 标准训练
+    # Standard training
     top_words, train_theta = model.fit_transform_sc(
         cell_embeddings=cell_embeddings,
         gene_names=gene_names,
@@ -425,17 +405,17 @@ def train_fastopic_model(
 
     training_time = time.time() - start_time
 
-    # 获取结果矩阵
+    # Collect result matrices
     beta = model.get_beta()  # topic-gene matrix
     theta = train_theta      # cell-topic matrix
     
-    # 计算评估指标
+    # Compute evaluation metrics
     from scipy.stats import entropy
     
-    # Shannon熵（衡量topic分布的均匀性）
-    # 对 theta 做数值清理，避免 NaN/Inf 导致评估为 NaN
+    # Shannon entropy (topic distribution uniformity)
+    # Sanitize theta to avoid NaN/Inf in evaluation
     theta_sane = np.nan_to_num(theta, nan=0.0, posinf=0.0, neginf=0.0)
-    # 行归一化，确保每个细胞的主题分布和为1；空行则设为均匀分布
+    # Row-normalize so each cell sums to 1; fallback to uniform for empty rows
     row_sum = theta_sane.sum(axis=1, keepdims=True)
     if row_sum.ndim == 1:
         row_sum = row_sum.reshape(-1, 1)
@@ -446,15 +426,15 @@ def train_fastopic_model(
     theta_sane = theta_sane / np.maximum(row_sum, 1e-12)
 
     topic_weights = theta_sane.mean(axis=0)
-    # 归一化到概率分布，防止极小负数或精度误差
+    # Normalize to a probability distribution; guard against tiny negatives / precision issues
     topic_weights = np.clip(topic_weights, 0.0, None)
     topic_weights = topic_weights / np.maximum(topic_weights.sum(), 1e-12)
     shannon_entropy = entropy(topic_weights + 1e-12, base=2)
     
-    # 有效topic数量
+    # Effective number of topics
     effective_topics = 2**shannon_entropy
     
-    # 主导topic占比
+    # Dominant topic ratio
     max_topic_weight = topic_weights.max() if topic_weights.size else 0.0
     dominant_topic_ratio = max_topic_weight * 100
     
@@ -482,12 +462,12 @@ def save_all_matrices(
     config: FastopicConfig,
     verbose: bool = False,
 ):
-    """保存所有矩阵"""
+    """Save all matrices to disk."""
     if verbose:
         print("\n💾 Saving matrices")
         print("="*60)
     
-    # 准备需要保存的矩阵（仅保存用户需要的4种）
+    # Prepare matrices to persist (the core four)
     def _to_numpy(arr):
         if isinstance(arr, torch.Tensor):
             return arr.detach().cpu().numpy()
@@ -511,11 +491,11 @@ def save_all_matrices(
         if verbose:
             print(f"⚠️ Could not capture gene_names for persistence: {e}")
     
-    # 验证矩阵
+    # Validate matrices
     if not validate_matrices(matrices):
         raise ValueError("Matrix validation failed")
     
-    # 保存矩阵
+    # Save matrices
     saved_files = save_matrices(
         matrices=matrices,
         dataset_name=config.dataset,
@@ -529,16 +509,16 @@ def save_all_matrices(
 
 
 def main():
-    """主函数"""
+    """Main entry point."""
     print("🚀 scFASTopic Training Pipeline")
     print("="*80)
     
-    # 解析参数
+    # Parse arguments
     args = parse_args()
     
     config = config_from_args(args)
 
-    # 设置随机种子
+    # Set random seeds
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     
@@ -554,17 +534,17 @@ def main():
         print(f"  Adata file: {config.adata_path}")
     
     try:
-        # Step 1: 加载embeddings和预处理表达数据
+        # Step 1: Load embeddings and preprocess expression matrix
         cell_embeddings, expression_matrix, gene_names = load_embeddings_and_expression(
             config.embedding_file, config.adata_path, config.verbose, config.filter_genept
         )
         
-        # Step 2: 训练模型
+        # Step 2: Train model
         model, results, training_time = train_fastopic_model(
             cell_embeddings, expression_matrix, gene_names, config, config.verbose
         )
 
-        # Step 3: 保存矩阵
+        # Step 3: Save matrices
         saved_files = save_all_matrices(
             model, results, config, config.verbose
         )

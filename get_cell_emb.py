@@ -63,7 +63,7 @@ def _copy_counts(matrix):
 
 def preprocess_for_scvi(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnData:
     if config.verbose:
-        logger.info("原始数据: %d cells × %d genes", adata.n_obs, adata.n_vars)
+        logger.info("Raw data: %d cells × %d genes", adata.n_obs, adata.n_vars)
 
     adata = adata.copy()
 
@@ -75,7 +75,7 @@ def preprocess_for_scvi(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnDat
         subset = rng.choice(adata.n_obs, size=config.max_cells, replace=False)
         adata = adata[subset].copy()
         if config.verbose:
-            logger.info("采样后细胞数: %d", adata.n_obs)
+            logger.info("Cells after subsampling: %d", adata.n_obs)
 
     if "counts" in adata.layers:
         counts = _copy_counts(adata.layers["counts"])
@@ -100,13 +100,13 @@ def preprocess_for_scvi(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnDat
         )
         adata = adata[:, adata.var.highly_variable].copy()
         if config.verbose:
-            logger.info("选择了 %d 个高变基因", adata.n_vars)
+            logger.info("Selected %d highly variable genes", adata.n_vars)
 
     sc.pp.filter_cells(adata, min_counts=1)
     sc.pp.filter_genes(adata, min_cells=1)
 
     if config.verbose:
-        logger.info("预处理后: %d cells × %d genes", adata.n_obs, adata.n_vars)
+        logger.info("Post-preprocessing: %d cells × %d genes", adata.n_obs, adata.n_vars)
 
     return adata
 
@@ -145,7 +145,7 @@ def train_scvi_model(adata: ad.AnnData, config: EmbeddingConfig) -> scvi.model.S
 
     if config.verbose:
         logger.info(
-            "训练SCVI模型 (epochs=%d, latent=%d, batch_size=%d)...",
+            "Training SCVI model (epochs=%d, latent=%d, batch_size=%d)...",
             config.max_epochs,
             config.n_latent,
             config.batch_size,
@@ -170,32 +170,32 @@ def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str
         pickle.dump(cell_embeddings, f)
 
     if config.verbose:
-        logger.info("Cell embeddings已保存到: %s", path)
+        logger.info("Cell embeddings saved to: %s", path)
     return str(path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="scFASTopic cell embeddings via scVI")
-    parser.add_argument("--input_data", required=True, help="输入数据路径(.h5ad)")
-    parser.add_argument("--dataset_name", default="dataset", help="数据集名称")
-    parser.add_argument("--output_dir", default="scFastopic/results/cell_embedding", help="输出目录")
-    parser.add_argument("--max_cells", type=int, help="最大细胞数量")
-    parser.add_argument("--n_top_genes", type=int, default=2000, help="高变基因数量")
-    parser.add_argument("--batch_key", help="AnnData中批次信息列")
-    parser.add_argument("--labels_key", help="AnnData中标签列")
-    parser.add_argument("--n_latent", type=int, default=3072, help="scVI latent维度")
-    parser.add_argument("--n_hidden", type=int, default=128, help="scVI隐藏层大小")
-    parser.add_argument("--n_layers", type=int, default=2, help="scVI层数")
-    parser.add_argument("--dropout_rate", type=float, default=0.1, help="scVI dropout")
-    parser.add_argument("--gene_likelihood", default="zinb", help="scVI基因似然函数")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="训练学习率")
-    parser.add_argument("--max_epochs", type=int, default=1000, help="最大训练轮数")
-    parser.add_argument("--batch_size", type=int, default=128, help="训练批次大小")
-    parser.add_argument("--early_stopping", action="store_true", help="启用早停")
-    parser.add_argument("--early_stopping_patience", type=int, default=20, help="早停耐心")
-    parser.add_argument("--check_val_every_n_epoch", type=int, default=1, help="验证频率")
-    parser.add_argument("--seed", type=int, default=0, help="随机种子")
-    parser.add_argument("--verbose", action="store_true", help="详细输出")
+    parser.add_argument("--input_data", required=True, help="Input .h5ad file path")
+    parser.add_argument("--dataset_name", default="dataset", help="Dataset name")
+    parser.add_argument("--output_dir", default="scFastopic/results/cell_embedding", help="Output directory")
+    parser.add_argument("--max_cells", type=int, help="Max number of cells")
+    parser.add_argument("--n_top_genes", type=int, default=2000, help="Number of highly variable genes")
+    parser.add_argument("--batch_key", help="Batch column in AnnData")
+    parser.add_argument("--labels_key", help="Labels column in AnnData")
+    parser.add_argument("--n_latent", type=int, default=3072, help="Latent dimension for scVI")
+    parser.add_argument("--n_hidden", type=int, default=128, help="Hidden layer size for scVI")
+    parser.add_argument("--n_layers", type=int, default=2, help="Number of layers for scVI")
+    parser.add_argument("--dropout_rate", type=float, default=0.1, help="Dropout for scVI")
+    parser.add_argument("--gene_likelihood", default="zinb", help="Gene likelihood for scVI")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Training learning rate")
+    parser.add_argument("--max_epochs", type=int, default=1000, help="Max training epochs")
+    parser.add_argument("--batch_size", type=int, default=128, help="Training batch size")
+    parser.add_argument("--early_stopping", action="store_true", help="Enable early stopping")
+    parser.add_argument("--early_stopping_patience", type=int, default=20, help="Early stopping patience")
+    parser.add_argument("--check_val_every_n_epoch", type=int, default=1, help="Validation check frequency")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
@@ -223,7 +223,7 @@ def main() -> None:
     )
 
     if config.verbose:
-        logger.info("加载数据: %s", config.input_data)
+        logger.info("Loading data: %s", config.input_data)
     adata = sc.read_h5ad(config.input_data)
 
     adata_preprocessed = preprocess_for_scvi(adata, config)
@@ -232,12 +232,12 @@ def main() -> None:
 
     saved_file = save_embeddings(cell_embeddings, config)
 
-    logger.info("=== Cell Embedding提取完成 ===")
-    logger.info("数据集: %s", config.dataset_name)
-    logger.info("细胞数: %d", cell_embeddings.shape[0])
-    logger.info("Embedding维度: %d", cell_embeddings.shape[1])
-    logger.info("方法: scvi")
-    logger.info("保存位置: %s", saved_file)
+    logger.info("=== Cell embedding extraction completed ===")
+    logger.info("Dataset: %s", config.dataset_name)
+    logger.info("Cells: %d", cell_embeddings.shape[0])
+    logger.info("Embedding dim: %d", cell_embeddings.shape[1])
+    logger.info("Method: scvi")
+    logger.info("Saved to: %s", saved_file)
 
 
 if __name__ == "__main__":
