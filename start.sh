@@ -1,1 +1,0 @@
-bash /root/clash-for-linux/start.sh
