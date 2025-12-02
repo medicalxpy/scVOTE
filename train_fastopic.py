@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import numpy as np
 import pandas as pd
 import torch
@@ -7,8 +8,9 @@ import scipy.sparse as sp
 from pathlib import Path
 import pickle
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 import warnings
+
 warnings.filterwarnings('ignore')
 
 import scanpy as sc
@@ -113,6 +115,8 @@ class FastopicConfig:
     genept_loss_weight: float = 0.0
     # HVG selection for single training (0 disables)
     n_top_genes: int = 0
+    # Optional gene list filter for single training
+    gene_list_path: Optional[str] = "data/gene_list/C2_C5_GO.csv"
 
 
 def parse_args():
@@ -159,10 +163,21 @@ def parse_args():
                        help='Early stopping patience')
     parser.add_argument('--no_genept_filter', action='store_true',
                        help='Disable GenePT gene filtering')
+    parser.add_argument(
+        '--gene_list_path',
+        type=str,
+        default='data/gene_list/C2_C5_GO.csv',
+        help='CSV file with gene list to keep (default: data/gene_list/C2_C5_GO.csv)',
+    )
     
     # Structural alignment options
     parser.add_argument('--no_align', action='store_true',
                        help='Disable structural alignment (Laplacian + CKA)')
+    parser.add_argument(
+        '--structure',
+        action='store_true',
+        help='Enable structural (Laplacian + CKA) alignment explicitly',
+    )
     parser.add_argument('--align_alpha', type=float, default=1e-3,
                        help='Weight for Laplacian alignment loss')
     parser.add_argument('--align_beta', type=float, default=1e-3,
@@ -177,11 +192,27 @@ def parse_args():
     # Legacy GenePT contrastive alignment weight (kept for compatibility; default 0)
     parser.add_argument('--genept_loss_weight', type=float, default=0.0,
                        help='Weight for legacy GenePT contrastive alignment loss')
+    parser.add_argument(
+        '--contrastive',
+        action='store_true',
+        help='Enable GenePT contrastive alignment loss (uses a default weight if not set)',
+    )
     
     return parser.parse_args()
 
 
 def config_from_args(args: argparse.Namespace) -> FastopicConfig:
+    # Structural alignment: base flag from --no_align, allow overriding via --structure
+    align_enable = not args.no_align
+    if getattr(args, "structure", False):
+        align_enable = True
+
+    # GenePT contrastive alignment: base weight from --genept_loss_weight,
+    # optionally enable via --contrastive with a small default weight.
+    genept_loss_weight = args.genept_loss_weight
+    if getattr(args, "contrastive", False) and genept_loss_weight <= 0.0:
+        genept_loss_weight = 1e-3
+
     return FastopicConfig(
         embedding_file=args.embedding_file,
         adata_path=args.adata_path,
@@ -197,14 +228,15 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         seed=args.seed,
         filter_genept=not args.no_genept_filter,
         patience=args.patience,
-        align_enable=not args.no_align,
+        align_enable=align_enable,
         align_alpha=args.align_alpha,
         align_beta=args.align_beta,
         align_knn_k=args.align_knn_k,
         align_cka_sample_n=args.align_cka_sample_n,
         align_max_kernel_genes=args.align_max_kernel_genes,
-        genept_loss_weight=args.genept_loss_weight,
+        genept_loss_weight=genept_loss_weight,
         n_top_genes=args.n_top_genes,
+        gene_list_path=args.gene_list_path,
     )
 
 
@@ -219,11 +251,49 @@ def load_genept_genes():
         print(f"⚠️ Could not load GenePT gene list: {e}")
         return None
 
+
+def load_gene_list(
+    gene_list_path: str,
+    verbose: bool = False,
+) -> Optional[Set[str]]:
+    """Load a gene list from CSV and return as a set of symbols.
+
+    The CSV is expected to contain either a column named ``gene_symbol`` or
+    a single unnamed column with gene symbols.
+    """
+    try:
+        df = pd.read_csv(gene_list_path)
+    except FileNotFoundError:
+        if verbose:
+            print(f"⚠️ Gene list file not found: {gene_list_path}")
+        return None
+    except Exception as e:
+        if verbose:
+            print(f"⚠️ Could not load gene list from {gene_list_path}: {e}")
+        return None
+
+    if df.empty:
+        if verbose:
+            print(f"⚠️ Gene list CSV is empty: {gene_list_path}")
+        return None
+
+    if "gene_symbol" in df.columns:
+        series = df["gene_symbol"]
+    else:
+        series = df.iloc[:, 0]
+
+    genes = {str(g).strip() for g in series.dropna().astype(str)}
+    if verbose:
+        print(f"🧬 Loaded {len(genes)} genes from gene list: {gene_list_path}")
+    return genes
+
+
 def preprocess_adata(
     adata_path: str,
     verbose: bool = False,
     filter_genept: bool = True,
     n_top_genes: int = 0,
+    gene_list_path: Optional[str] = None,
 ):
     """
     Extract counts from adata and preprocess.
@@ -232,6 +302,9 @@ def preprocess_adata(
         adata_path: Path to single-cell data (.h5ad).
         verbose: Whether to print details.
         filter_genept: Whether to filter to genes shared with GenePT.
+        n_top_genes: Number of HVGs to keep (0 disables HVG filter).
+        gene_list_path: Optional CSV path; if provided, restrict genes to
+            those present in the gene list (intersection with adata.var_names).
 
     Returns:
         expression_matrix: Preprocessed expression matrix (cells x genes).
@@ -242,6 +315,26 @@ def preprocess_adata(
     
     # Load data
     adata = sc.read_h5ad(adata_path)
+
+    # Gene list filtering (e.g., C2_C5_GO)
+    if gene_list_path:
+        gene_list = load_gene_list(gene_list_path, verbose=verbose)
+        if gene_list:
+            current_genes = [str(g) for g in adata.var_names]
+            mask = [g in gene_list for g in current_genes]
+            n_keep = sum(mask)
+            if n_keep > 0:
+                adata = adata[:, mask].copy()
+                if verbose:
+                    print(
+                        f"🧬 Gene-list filtering: kept {n_keep}/"
+                        f"{len(current_genes)} genes from {gene_list_path}"
+                    )
+            elif verbose:
+                print(
+                    f"⚠️ Gene-list filtering skipped: no overlap between "
+                    f"adata genes and list {gene_list_path}"
+                )
     
     if verbose:
         print(f"Original shape: {adata.shape}")
@@ -261,17 +354,16 @@ def preprocess_adata(
         genept_genes = load_genept_genes()
         if genept_genes is not None:
             # Find genes shared with GenePT
-            current_genes = set(adata.var_names)
-            common_genes = current_genes.intersection(genept_genes)
-            
-            if len(common_genes) > 0:
-                # Filter to shared genes
-                adata = adata[:, list(common_genes)]
+            current_genes = [str(g) for g in adata.var_names]
+            mask = [g in genept_genes for g in current_genes]
+            n_keep = sum(mask)
+
+            if n_keep > 0:
+                adata = adata[:, mask].copy()
                 if verbose:
-                    print(f"🧬 GenePT filtering: kept {len(common_genes)}/{len(current_genes)} genes")
-            else:
-                if verbose:
-                    print("⚠️ No genes shared with GenePT; skip filtering")
+                    print(f"🧬 GenePT filtering: kept {n_keep}/{len(current_genes)} genes")
+            elif verbose:
+                print("⚠️ No genes shared with GenePT; skip filtering")
     
     # Optional HVG selection (default disabled)
     if n_top_genes and n_top_genes > 0:
@@ -297,11 +389,15 @@ def preprocess_adata(
     # log1p transform
     sc.pp.log1p(adata)
     
-    # Get processed matrix
-    if hasattr(adata.X, 'toarray'):
-        expression_matrix = adata.X.toarray()
-    else:
-        expression_matrix = adata.X
+    # Get processed matrix (keep sparse to avoid OOM on large datasets)
+    try:
+        if sp.issparse(adata.X):
+            expression_matrix = adata.X.copy()
+        else:
+            expression_matrix = adata.X
+    except Exception:
+        # Fallback: best-effort dense conversion
+        expression_matrix = adata.X.toarray() if hasattr(adata.X, "toarray") else adata.X
     
     gene_names = adata.var_names.tolist()
     
@@ -318,6 +414,7 @@ def load_embeddings_and_expression(
     verbose: bool = False,
     filter_genept: bool = True,
     n_top_genes: int = 0,
+    gene_list_path: Optional[str] = None,
 ):
     """
     Load cell embeddings and the preprocessed expression matrix.
@@ -327,6 +424,9 @@ def load_embeddings_and_expression(
         adata_path: Path to original adata (.h5ad).
         verbose: Whether to print details.
         filter_genept: Whether to filter to genes shared with GenePT.
+        n_top_genes: Number of HVGs to keep (0 disables HVG filter).
+        gene_list_path: Optional CSV path; if provided, restrict genes to
+            those present in the gene list.
 
     Returns:
         cell_embeddings: Array of cell embeddings.
@@ -353,6 +453,7 @@ def load_embeddings_and_expression(
         verbose=verbose,
         filter_genept=filter_genept,
         n_top_genes=n_top_genes,
+        gene_list_path=gene_list_path,
     )
     
     # Ensure matching cell counts
@@ -396,6 +497,15 @@ def train_fastopic_model(
     if verbose:
         print("\n🤖 Training scFASTopic model")
         print("="*60)
+
+    # Reset GPU peak memory stats so we can measure usage for this run.
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            # If reset is not supported, we just skip GPU memory tracking.
+            if verbose:
+                print("⚠️ Could not reset CUDA peak memory stats; GPU usage tracking disabled.")
     
     # Use the FASTopic implementation
     from fastopic import FASTopic
@@ -415,8 +525,8 @@ def train_fastopic_model(
         genept_loss_weight=config.genept_loss_weight,
         verbose=verbose,
         log_interval=10,
-        low_memory=False,
-        low_memory_batch_size=8000
+        low_memory=True,
+        low_memory_batch_size=2048
     )
     
     # Train model
@@ -439,6 +549,21 @@ def train_fastopic_model(
     )
 
     training_time = time.time() - start_time
+
+    # Measure peak GPU memory usage (if available)
+    gpu_max_mem_allocated_mb: Optional[float] = None
+    gpu_max_mem_reserved_mb: Optional[float] = None
+    if torch.cuda.is_available():
+        try:
+            gpu_max_mem_allocated_mb = float(
+                torch.cuda.max_memory_allocated() / (1024**2)
+            )
+            gpu_max_mem_reserved_mb = float(
+                torch.cuda.max_memory_reserved() / (1024**2)
+            )
+        except Exception:
+            gpu_max_mem_allocated_mb = None
+            gpu_max_mem_reserved_mb = None
 
     # Collect result matrices
     beta = model.get_beta()  # topic-gene matrix
@@ -480,6 +605,8 @@ def train_fastopic_model(
         'shannon_entropy': shannon_entropy,
         'effective_topics': effective_topics,
         'dominant_topic_ratio': dominant_topic_ratio,
+        'gpu_max_mem_allocated_mb': gpu_max_mem_allocated_mb,
+        'gpu_max_mem_reserved_mb': gpu_max_mem_reserved_mb,
     }
 
     if verbose:
@@ -487,6 +614,16 @@ def train_fastopic_model(
         print(f"📊 Shannon Entropy: {shannon_entropy:.3f}")
         print(f"🎯 Effective Topics: {effective_topics:.1f}")
         print(f"👑 Dominant Topic: {dominant_topic_ratio:.1f}%")
+        if gpu_max_mem_allocated_mb is not None:
+            print(
+                f"💾 GPU peak memory (allocated): "
+                f"{gpu_max_mem_allocated_mb:.1f} MB"
+            )
+        if gpu_max_mem_reserved_mb is not None:
+            print(
+                f"💾 GPU peak memory (reserved): "
+                f"{gpu_max_mem_reserved_mb:.1f} MB"
+            )
 
     return model, results, training_time
 
@@ -564,8 +701,11 @@ def main():
         print(f"  Epochs: {config.epochs}")
         print(f"  Learning Rate: {config.learning_rate}")
         print(f"  Early stopping patience: {config.patience}")
+        print(f"  Structure alignment (Laplacian+CKA): {config.align_enable}")
+        print(f"  GenePT contrastive weight: {config.genept_loss_weight}")
         print(f"  GenePT gene filtering: {config.filter_genept}")
         print(f"  HVG n_top_genes: {config.n_top_genes}")
+        print(f"  Gene list path: {config.gene_list_path}")
         print(f"  Embedding file: {config.embedding_file}")
         print(f"  Adata file: {config.adata_path}")
     
@@ -577,6 +717,7 @@ def main():
             verbose=config.verbose,
             filter_genept=config.filter_genept,
             n_top_genes=config.n_top_genes,
+            gene_list_path=config.gene_list_path,
         )
         
         # Step 2: Train model
@@ -588,6 +729,27 @@ def main():
         saved_files = save_all_matrices(
             model, results, config, config.verbose
         )
+
+        # Step 4: Persist GPU memory stats (if available) for downstream scripts
+        gpu_alloc = results.get("gpu_max_mem_allocated_mb")
+        gpu_reserved = results.get("gpu_max_mem_reserved_mb")
+        if gpu_alloc is not None or gpu_reserved is not None:
+            gpu_stats = {
+                "dataset": config.dataset,
+                "n_topics": config.n_topics,
+                "gpu_max_mem_allocated_mb": gpu_alloc,
+                "gpu_max_mem_reserved_mb": gpu_reserved,
+            }
+            gpu_stats_dir = Path(config.output_dir) / "gpu_stats"
+            gpu_stats_dir.mkdir(parents=True, exist_ok=True)
+            gpu_stats_path = gpu_stats_dir / f"{config.dataset}_gpu_stats_{config.n_topics}.json"
+            try:
+                with open(gpu_stats_path, "w", encoding="utf-8") as f:
+                    json.dump(gpu_stats, f, ensure_ascii=False, indent=2)
+                if config.verbose:
+                    print(f"💾 Saved GPU stats to: {gpu_stats_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to save GPU stats to {gpu_stats_path}: {e}")
 
         print(f"\n🎉 Training completed successfully!")
         print(f"📁 Results saved to: {config.output_dir}/")
