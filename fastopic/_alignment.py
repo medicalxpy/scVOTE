@@ -81,12 +81,14 @@ class GeneAlignmentRef:
         if not self.has_overlap():
             return torch.as_tensor(0.0, device=word_embeddings.device)
 
+        device = word_embeddings.device
+
         # Subsample overlap for tractability (reuse CKA sampling size)
         idx_all = self._overlap_idx
         n = idx_all.numel()
         sample_n = min(self.config.cka_sample_n, n)
         if sample_n < 2:
-            return torch.as_tensor(0.0, device=word_embeddings.device)
+            return torch.as_tensor(0.0, device=device)
         if sample_n < n:
             g = torch.Generator(device='cpu')
             g.manual_seed(self.config.random_state)
@@ -96,30 +98,47 @@ class GeneAlignmentRef:
 
         # Current E' subset and reference subset X
         idx = idx_all.index_select(0, perm.to(idx_all.device))
-        E = word_embeddings.index_select(0, idx.to(word_embeddings.device))
+        E = word_embeddings.index_select(0, idx.to(device))
         E = _row_l2_normalize(E)
-        X = self._tilde_E.index_select(0, perm.to(self._tilde_E.device)).numpy()
+        X_ref = self._tilde_E.index_select(0, perm.to(self._tilde_E.device))
 
-        # Build kNN graph W on-the-fly for this subset
-        W_csr = self._build_knn_w(X, self.config.knn_k)
-        W_coo = self._csr_to_coo_torch(W_csr, device=word_embeddings.device)
-        # Ensure coalesced for indices() access
-        W_coo = W_coo.coalesce()
-        rows = W_coo.indices()[0]
-        cols = W_coo.indices()[1]
-        vals = W_coo.values()
+        if device.type == "cuda":
+            # GPU path: build dense kNN graph in PyTorch on the current device
+            W = self._build_knn_w_torch(X_ref.to(device), self.config.knn_k)
 
-        # Degree vector d_i = sum_j w_ij (W is symmetric)
-        ns = int(W_csr.shape[0])
-        d = torch.zeros(ns, device=word_embeddings.device, dtype=E.dtype)
-        d.index_add_(0, rows, vals)
+            # Degree vector d_i = sum_j w_ij (W is symmetric)
+            d = W.sum(dim=1)
 
-        # Compute sum_i d_i ||e_i||^2
-        part1 = (d * (E * E).sum(dim=1)).sum()
+            # Compute sum_i d_i ||e_i||^2
+            part1 = (d * (E * E).sum(dim=1)).sum()
 
-        # Compute sum_{ij} w_ij <e_i, e_j>
-        dot_ij = (E.index_select(0, rows) * E.index_select(0, cols)).sum(dim=1)
-        part2 = (vals * dot_ij).sum()
+            # Compute sum_{ij} w_ij <e_i, e_j>
+            dot_ij_mat = E @ E.t()
+            part2 = (W * dot_ij_mat).sum()
+        else:
+            # CPU path: retain previous sklearn + scipy implementation
+            X_np = X_ref.numpy()
+
+            # Build kNN graph W on-the-fly for this subset
+            W_csr = self._build_knn_w(X_np, self.config.knn_k)
+            W_coo = self._csr_to_coo_torch(W_csr, device=device)
+            # Ensure coalesced for indices() access
+            W_coo = W_coo.coalesce()
+            rows = W_coo.indices()[0]
+            cols = W_coo.indices()[1]
+            vals = W_coo.values()
+
+            # Degree vector d_i = sum_j w_ij (W is symmetric)
+            ns = int(W_csr.shape[0])
+            d = torch.zeros(ns, device=device, dtype=E.dtype)
+            d.index_add_(0, rows, vals)
+
+            # Compute sum_i d_i ||e_i||^2
+            part1 = (d * (E * E).sum(dim=1)).sum()
+
+            # Compute sum_{ij} w_ij <e_i, e_j>
+            dot_ij = (E.index_select(0, rows) * E.index_select(0, cols)).sum(dim=1)
+            part2 = (vals * dot_ij).sum()
 
         loss = part1 - part2
         return loss
@@ -158,7 +177,7 @@ class GeneAlignmentRef:
         G = _center_gram(G)
 
         # Reference kernels for the same subset (computed on-the-fly)
-        K_list = self._make_kernels_for_indices(perm)
+        K_list = self._make_kernels_for_indices(perm, device=device)
         if not K_list:
             return torch.as_tensor(0.0, device=device)
 
@@ -246,51 +265,54 @@ class GeneAlignmentRef:
 
     # Removed kernel template precomputation; see _make_kernels_for_indices
 
-    def _estimate_rbf_gammas(self, X: np.ndarray) -> List[float]:
+    def _estimate_rbf_gammas_torch(self, X: torch.Tensor) -> List[float]:
+        """Estimate RBF gammas from pairwise squared distances using PyTorch.
+
+        Works on both CPU and GPU tensors.
+        """
         n = X.shape[0]
         s = min(2000, n)
         if s < 2:
             return []
-        rng = np.random.default_rng(self.config.random_state)
-        idx = rng.permutation(n)[:s]
-        Xs = X[idx]
-        # pairwise squared distances in the sample
-        G = Xs @ Xs.T
-        sq = np.sum(Xs * Xs, axis=1, keepdims=True)
-        D2 = sq + sq.T - 2.0 * G
-        # take upper triangle excluding diagonal
-        iu = np.triu_indices(s, k=1)
-        vals = D2[iu]
-        qs = np.quantile(vals, q=self.config.rbf_quantiles)
-        gammas = [float(max(q, 1e-6)) for q in qs]
+        # Sample subset indices deterministically
+        g = torch.Generator(device="cpu")
+        g.manual_seed(self.config.random_state)
+        idx = torch.randperm(n, generator=g)[:s].to(X.device)
+        Xs = X.index_select(0, idx)
+        G = Xs @ Xs.t()
+        sq = (Xs * Xs).sum(dim=1, keepdim=True)
+        D2 = sq + sq.t() - 2.0 * G
+        iu = torch.triu_indices(s, s, offset=1, device=D2.device)
+        vals = D2[iu[0], iu[1]]
+        if vals.numel() == 0:
+            return []
+        qs = torch.tensor(self.config.rbf_quantiles, device=vals.device, dtype=vals.dtype)
+        quantiles = torch.quantile(vals, qs)
+        gammas = [float(max(q.item(), 1e-6)) for q in quantiles]
         return gammas
 
     def _get_kernel_templates_for_subset(self, perm_subset: torch.Tensor) -> List[torch.Tensor]:
-        """Slice precomputed templates to a given subset of the overlap.
-
-        perm_subset indexes into the full-overlap order. If templates were built on a
-        capped subset, we intersect indices accordingly.
-        """
-        # Deprecated: kernels are computed on-the-fly. This method returns an empty list.
+        """Deprecated API kept for compatibility; kernels are built on-the-fly."""
         return []
 
-    def _make_kernels_for_indices(self, perm_subset: torch.Tensor) -> List[torch.Tensor]:
+    def _make_kernels_for_indices(self, perm_subset: torch.Tensor, device: torch.device) -> List[torch.Tensor]:
         """Compute cosine and multi-scale RBF kernels for a given overlap subset on-the-fly.
 
         Args:
             perm_subset: indices (0..n_overlap-1) selecting rows from self._tilde_E
+            device: device where kernels should live
         Returns:
-            List of centered torch kernels (on CPU); caller moves to device.
+            List of centered torch kernels on the given device.
         """
         if self._tilde_E is None or perm_subset.numel() < 2:
             return []
-        # Gather subset from normalized reference embeddings (CPU tensor)
-        X = self._tilde_E.index_select(0, perm_subset.to(self._tilde_E.device))
+        # Gather subset from normalized reference embeddings and move to target device
+        X = self._tilde_E.index_select(0, perm_subset.to(self._tilde_E.device)).to(device)
+        X = _row_l2_normalize(X)
         # Cosine kernel (X rows are normalized)
         K_cos = _center_gram(X @ X.t())
         # RBF kernels using quantile-based gammas estimated on the same subset
-        X_np = X.numpy()
-        gammas = self._estimate_rbf_gammas(X_np)
+        gammas = self._estimate_rbf_gammas_torch(X)
         K_rbfs: List[torch.Tensor] = []
         if gammas:
             sq = (X * X).sum(dim=1, keepdim=True)
@@ -307,3 +329,40 @@ class GeneAlignmentRef:
         indices = torch.as_tensor(np.vstack([W_coo.row, W_coo.col]), dtype=torch.long, device=device)
         values = torch.as_tensor(W_coo.data, dtype=torch.float32, device=device)
         return torch.sparse_coo_tensor(indices, values, size=W_coo.shape, device=device)
+
+    @staticmethod
+    def _build_knn_w_torch(X: torch.Tensor, k: int) -> torch.Tensor:
+        """Build cosine kNN graph with PyTorch only (dense similarity matrix).
+
+        Args:
+            X: (n, d) row-normalized reference embeddings on target device.
+            k: number of neighbors (excluding self).
+        Returns:
+            Dense (n, n) similarity matrix W on the same device.
+        """
+        if X.ndim != 2:
+            raise ValueError("X must be a 2D tensor")
+        n = X.shape[0]
+        if n == 0:
+            return torch.zeros((0, 0), dtype=X.dtype, device=X.device)
+
+        # Cosine similarity
+        S = X @ X.t()
+
+        # Mask self-similarity so it is not selected as neighbor
+        diag_mask = torch.eye(n, dtype=torch.bool, device=X.device)
+        S = S.masked_fill(diag_mask, -1e9)
+
+        k_eff = int(min(max(2, n), k + 1))
+        if k_eff <= 0:
+            return torch.zeros((n, n), dtype=X.dtype, device=X.device)
+
+        top_vals, top_idx = torch.topk(S, k_eff, dim=1)
+        top_vals = torch.clamp(top_vals, min=0.0)
+
+        W = torch.zeros_like(S)
+        W.scatter_(1, top_idx, top_vals)
+
+        # Symmetrize by max to match CPU behavior
+        W = torch.maximum(W, W.t())
+        return W

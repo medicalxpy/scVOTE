@@ -196,8 +196,14 @@ class fastopic(nn.Module):
         # Add structural alignment losses (Laplacian + CKA)
         loss_lap, loss_cka = self._compute_struct_alignment_losses()
 
-        # Keep legacy GenePT contrastive alignment loss
-        loss_genept_alignment = self._compute_genept_alignment_loss()
+        # Keep legacy GenePT contrastive alignment loss, but only compute it
+        # when the weight is positive to avoid unnecessary (and heavy) work.
+        if self.genept_loss_weight is not None and self.genept_loss_weight > 0:
+            loss_genept_alignment = self._compute_genept_alignment_loss()
+        else:
+            loss_genept_alignment = torch.tensor(
+                0.0, device=self.word_embeddings.device
+            )
 
         loss = (
             loss_DSR
