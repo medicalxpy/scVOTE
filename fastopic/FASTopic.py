@@ -193,6 +193,8 @@ class FASTopic:
         patience_counter = 0
         
         for epoch in tqdm(range(1, epochs + 1), desc="Training scFASTopic"):
+            # Accumulate scalar losses on CPU to avoid keeping the whole
+            # computation graph in memory across the epoch.
             loss_rst_dict = defaultdict(float)
 
             for batch_bow, batch_cell_embed in dataset.dataloader:
@@ -207,8 +209,23 @@ class FASTopic:
                 batch_loss.backward()
                 optimizer.step()
 
-                for key in rst_dict:
-                    loss_rst_dict[key] += rst_dict[key] * batch_bow.shape[0]
+                batch_size = batch_bow.shape[0]
+                # Detach per-batch losses and move to CPU so we do not
+                # retain computational graphs and GPU tensors.
+                for key, value in rst_dict.items():
+                    with torch.no_grad():
+                        val = value.detach()
+                        # Ensure scalar; if a tensor has shape, take mean.
+                        if hasattr(val, "dim") and val.dim() > 0:
+                            val = val.mean()
+                        loss_rst_dict[key] += float(val) * batch_size
+
+                # Explicitly release batch tensors and clear CUDA cache to
+                # mitigate OOM on large datasets (see upstream FASTopic
+                # discussions / issue about GPU memory).
+                del batch_bow, batch_cell_embed, batch_loss, rst_dict
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             avg_losses = {key: loss_rst_dict[key] / data_size for key in loss_rst_dict}
             current_loss = avg_losses['loss']
@@ -226,7 +243,7 @@ class FASTopic:
                         output_log += f" | ETP = DT: {avg_losses['loss_DT']:.3f} + TW: {avg_losses['loss_TW']:.3f}"
                 else:
                     output_log = f"Epoch: {epoch:03d}"
-                    for key in loss_rst_dict:
+                    for key in avg_losses:
                         output_log += f" {key}: {avg_losses[key]:.3f}"
                 
                 logger.info(output_log)
