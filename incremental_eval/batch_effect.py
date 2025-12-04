@@ -2,6 +2,7 @@ import os
 import pickle
 from typing import List, Optional, Sequence, Tuple
 
+import glob
 import numpy as np
 import scanpy as sc
 
@@ -20,8 +21,6 @@ def _find_single_file(patterns: Sequence[str]) -> Optional[str]:
 
 def _load_cell_topic_matrix(results_dir: str, dataset: str) -> np.ndarray:
     """Load cell-topic matrix for a dataset from results_dir."""
-    import glob
-
     pat = os.path.join(
         results_dir, "cell_topic", f"{dataset}*cell_topic_matrix*.pkl"
     )
@@ -34,6 +33,38 @@ def _load_cell_topic_matrix(results_dir: str, dataset: str) -> np.ndarray:
     with open(path, "rb") as f:
         mat = pickle.load(f)
     return np.asarray(mat, dtype=np.float32)
+
+
+def _load_cell_types(
+    adata_path: str,
+    label_key: str,
+    expected_n_cells: int,
+    *,
+    min_genes: int = 200,
+) -> np.ndarray:
+    """Load cell-type labels aligned with training-time cell filtering.
+
+    We mimic the cell-level filtering in train_fastopic.preprocess_adata by
+    applying sc.pp.filter_cells(min_genes=200) to the original AnnData object.
+    The resulting order is then truncated or padded to match expected_n_cells.
+    """
+    adata = sc.read_h5ad(adata_path)
+    sc.pp.filter_cells(adata, min_genes=min_genes)
+
+    if label_key not in adata.obs:
+        raise KeyError(
+            f"Label key '{label_key}' not found in AnnData.obs for {adata_path}"
+        )
+
+    labels = adata.obs[label_key].astype(str).to_numpy()
+
+    if labels.shape[0] >= expected_n_cells:
+        return labels[:expected_n_cells]
+
+    # If fewer labels than cells (should be rare), pad with 'unknown'.
+    pad_n = expected_n_cells - labels.shape[0]
+    pad = np.array(["unknown"] * pad_n, dtype=object)
+    return np.concatenate([labels, pad], axis=0)
 
 
 def _compute_filtered_topics_for_pair(
@@ -86,6 +117,9 @@ def plot_batch_effect_umap(
     n_topics: int,
     out_dir: str,
     tag: str,
+    adata_path_a: Optional[str] = None,
+    adata_path_b: Optional[str] = None,
+    label_key: Optional[str] = None,
     max_cells_per_batch: Optional[int] = None,
     filter_background: bool = True,
     sparsity_threshold: float = 0.20,
@@ -148,6 +182,25 @@ def plot_batch_effect_umap(
     theta_a = _maybe_subsample(theta_a, max_cells_per_batch)
     theta_b = _maybe_subsample(theta_b, max_cells_per_batch)
 
+    # Optional: load cell-type labels per batch (aligned to theta_* row counts).
+    cell_types_a: Optional[np.ndarray] = None
+    cell_types_b: Optional[np.ndarray] = None
+    if adata_path_a and adata_path_b and label_key:
+        cell_types_a = _load_cell_types(
+            adata_path=adata_path_a,
+            label_key=label_key,
+            expected_n_cells=theta_a.shape[0],
+        )
+        cell_types_b = _load_cell_types(
+            adata_path=adata_path_b,
+            label_key=label_key,
+            expected_n_cells=theta_b.shape[0],
+        )
+    if cell_types_a is not None and cell_types_b is not None:
+        cell_types_all = np.concatenate([cell_types_a, cell_types_b], axis=0)
+    else:
+        cell_types_all = None
+
     # Build combined AnnData in topic space (pre-filter)
     theta_all = np.vstack([theta_a, theta_b])
     batch_labels = np.array(
@@ -157,6 +210,8 @@ def plot_batch_effect_umap(
 
     adata_pre = sc.AnnData(X=theta_all)
     adata_pre.obs["batch"] = batch_labels
+    if cell_types_all is not None:
+        adata_pre.obs["cell_type"] = cell_types_all
 
     # Pre-filter UMAP
     sc.pp.neighbors(adata_pre, use_rep="X", n_neighbors=15, metric="euclidean")
@@ -167,11 +222,20 @@ def plot_batch_effect_umap(
         show=False,
         save=f"_{tag}_pre_topic_filter_batch.png",
     )
+    if cell_types_all is not None:
+        sc.pl.umap(
+            adata_pre,
+            color="cell_type",
+            show=False,
+            save=f"_{tag}_pre_topic_filter_celltype.png",
+        )
 
     # Post-filter UMAP: restrict to kept topic dimensions
     theta_post = theta_all[:, keep_indices]
     adata_post = sc.AnnData(X=theta_post)
     adata_post.obs["batch"] = batch_labels
+    if cell_types_all is not None:
+        adata_post.obs["cell_type"] = cell_types_all
 
     sc.pp.neighbors(adata_post, use_rep="X", n_neighbors=15, metric="euclidean")
     sc.tl.umap(adata_post, min_dist=0.3, random_state=0)
@@ -181,6 +245,13 @@ def plot_batch_effect_umap(
         show=False,
         save=f"_{tag}_post_topic_filter_batch.png",
     )
+    if cell_types_all is not None:
+        sc.pl.umap(
+            adata_post,
+            color="cell_type",
+            show=False,
+            save=f"_{tag}_post_topic_filter_celltype.png",
+        )
 
 
 def _parse_args() -> "argparse.Namespace":
@@ -229,6 +300,19 @@ def _parse_args() -> "argparse.Namespace":
         help="Tag to include in output figure filenames.",
     )
     p.add_argument(
+        "--adata_a",
+        help="Path to original .h5ad file for dataset A (used to load cell_type labels).",
+    )
+    p.add_argument(
+        "--adata_b",
+        help="Path to original .h5ad file for dataset B (used to load cell_type labels).",
+    )
+    p.add_argument(
+        "--label_key",
+        default="cell_type",
+        help="Column in AnnData.obs to use as cell type labels (default: cell_type).",
+    )
+    p.add_argument(
         "--max_cells_per_batch",
         type=int,
         default=None,
@@ -273,6 +357,9 @@ def main() -> int:
         n_topics=args.n_topics,
         out_dir=args.out_dir,
         tag=args.tag,
+        adata_path_a=args.adata_a,
+        adata_path_b=args.adata_b,
+        label_key=args.label_key,
         max_cells_per_batch=args.max_cells_per_batch,
         filter_background=filter_background,
         sparsity_threshold=args.sparsity_threshold,
@@ -284,4 +371,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
