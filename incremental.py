@@ -87,6 +87,9 @@ class TopicStore:
         sparsity_threshold: float = 0.20,
         topk_mass_threshold: Optional[float] = None,
         topk: int = 50,
+        # Topic coherence (pre-UOT, used together with sparsity)
+        coherence_top_n: int = 20,
+        coherence_threshold: float = 0.20,
         # Gene handling
         expand_genes: bool = True,
         # Debug/analysis
@@ -182,7 +185,7 @@ class TopicStore:
                 G = int(new_embeddings.shape[1])
             new_gene_names = [f"GENE_{i}" for i in range(G)]
 
-        # Optional: filter background (dense) topics before alignment
+        # Optional: filter background (dense, low-coherence) topics before alignment
         original_K = new_embeddings.shape[0]
         keep_idx = np.arange(original_K, dtype=int)
         filtered_idx: List[int] = []
@@ -201,18 +204,52 @@ class TopicStore:
             # For zero rows, force sparsity=0 (drop)
             hoyer = (sqrtG - (L1 / L2)) / (sqrtG - 1.0 + 1e-12) if sqrtG > 1.0 else np.zeros_like(L2)
             hoyer[zero_rows] = 0.0
-            keep = hoyer >= float(sparsity_threshold)
+
+            # Topic coherence based on gene embeddings: for each topic, compute
+            # the average pairwise cosine similarity among its top-N genes.
+            # Low coherence means the top genes are not semantically similar.
+            top_n = int(max(1, min(coherence_top_n, G)))
+            # Pre-normalise gene embeddings once
+            ge = np.asarray(gene_embeddings, dtype=np.float32)
+            ge_norm = ge / np.maximum(
+                np.linalg.norm(ge, axis=1, keepdims=True), 1e-12
+            )
+            coherence = np.zeros(original_K, dtype=np.float32)
+            for k in range(original_K):
+                # Use top-N genes by probability in P
+                row = P[k]
+                if G <= top_n:
+                    top_idx = np.arange(G, dtype=int)
+                else:
+                    top_idx = np.argpartition(row, -top_n)[-top_n:]
+                vecs = ge_norm[top_idx]
+                if vecs.shape[0] <= 1:
+                    coherence[k] = 0.0
+                    continue
+                sim = vecs @ vecs.T
+                iu = np.triu_indices(sim.shape[0], k=1)
+                coherence[k] = float(sim[iu].mean())
+
+            low_sparsity = hoyer < float(sparsity_threshold)
+            low_coherence = coherence <= float(coherence_threshold)
+
             # Optional top-k mass gate
+            low_mass = np.zeros_like(low_sparsity, dtype=bool)
             if topk_mass_threshold is not None and float(topk_mass_threshold) > 0.0 and G > 0:
                 k_eff = int(max(1, min(topk, G)))
-                # Sum of largest k entries per row
-                # Use partition for efficiency
                 part = np.partition(P, kth=G - k_eff, axis=1)
                 topk_mass = np.sum(part[:, -k_eff:], axis=1)
-                keep &= (topk_mass >= float(topk_mass_threshold))
+                low_mass = topk_mass < float(topk_mass_threshold)
 
+            # Final drop condition: only filter topics that are simultaneously
+            # low-sparsity (dense), low-coherence, and (optionally) low-mass.
+            drop = low_sparsity & low_coherence
+            if topk_mass_threshold is not None and float(topk_mass_threshold) > 0.0 and G > 0:
+                drop &= low_mass
+
+            keep = ~drop
             keep_idx = np.where(keep)[0]
-            filtered_idx = [int(i) for i in np.where(~keep)[0]]
+            filtered_idx = [int(i) for i in np.where(drop)[0]]
             if keep_idx.size == 0:
                 # Nothing to add or match; early exit
                 out = {"matched": [], "added": [], "assigned_ids": [], "store_size": self.size, "filtered": filtered_idx}
