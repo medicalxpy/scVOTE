@@ -19,17 +19,41 @@ def _find_single_file(patterns: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _load_cell_topic_matrix(results_dir: str, dataset: str) -> np.ndarray:
-    """Load cell-topic matrix for a dataset from results_dir."""
-    pat = os.path.join(
-        results_dir, "cell_topic", f"{dataset}*cell_topic_matrix*.pkl"
-    )
-    matches = sorted(glob.glob(pat), key=lambda p: os.path.getmtime(p), reverse=True)
-    if not matches:
-        raise FileNotFoundError(
-            f"Could not find cell_topic matrix for dataset={dataset} under {results_dir}/cell_topic"
+def _load_cell_topic_matrix(
+    results_dir: str,
+    dataset: str,
+    n_topics: Optional[int] = None,
+) -> np.ndarray:
+    """Load cell-topic matrix for a dataset from results_dir.
+
+    If n_topics is provided, prefer files whose names encode that topic count
+    (e.g., *cell_topic_matrix_50.pkl). Otherwise, fall back to the most recent
+    matching file.
+    """
+    topic_dir = os.path.join(results_dir, "cell_topic")
+    if n_topics is not None:
+        pat_exact = os.path.join(
+            topic_dir, f"{dataset}*cell_topic_matrix_{n_topics}.pkl"
         )
-    path = matches[0]
+        matches_exact = sorted(
+            glob.glob(pat_exact), key=lambda p: os.path.getmtime(p), reverse=True
+        )
+    else:
+        matches_exact = []
+
+    if matches_exact:
+        path = matches_exact[0]
+    else:
+        pat_any = os.path.join(topic_dir, f"{dataset}*cell_topic_matrix*.pkl")
+        matches_any = sorted(
+            glob.glob(pat_any), key=lambda p: os.path.getmtime(p), reverse=True
+        )
+        if not matches_any:
+            raise FileNotFoundError(
+                f"Could not find cell_topic matrix for dataset={dataset} under {topic_dir}"
+            )
+        path = matches_any[0]
+
     with open(path, "rb") as f:
         mat = pickle.load(f)
     return np.asarray(mat, dtype=np.float32)
@@ -163,8 +187,8 @@ def plot_batch_effect_umap(
         )
 
     # Load cell-topic matrices for both batches
-    theta_a = _load_cell_topic_matrix(results_dir_a, dataset_a)
-    theta_b = _load_cell_topic_matrix(results_dir_b, dataset_b)
+    theta_a = _load_cell_topic_matrix(results_dir_a, dataset_a, n_topics=n_topics)
+    theta_b = _load_cell_topic_matrix(results_dir_b, dataset_b, n_topics=n_topics)
 
     if theta_a.shape[1] != n_topics or theta_b.shape[1] != n_topics:
         raise ValueError(
