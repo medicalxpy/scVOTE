@@ -17,11 +17,28 @@ def _find_latest(pattern: str) -> str:
 
 
 def _load_topic_gene_matrix(results_dir: str, dataset: str, n_topics: int) -> np.ndarray:
-    """Load topic-gene matrix (beta) for a dataset."""
-    pat = os.path.join(
-        results_dir, "topic_gene", f"{dataset}*topic_gene_matrix*.pkl"
+    """Load topic-gene matrix (beta) for a dataset.
+
+    Prefer the file whose name encodes the requested n_topics (e.g.
+    *topic_gene_matrix_50.pkl when n_topics=50). If no such file exists,
+    fall back to the most recent topic_gene_matrix file.
+    """
+    topic_dir = os.path.join(results_dir, "topic_gene")
+    pat_exact = os.path.join(
+        topic_dir, f"{dataset}*topic_gene_matrix_{n_topics}.pkl"
     )
-    path = _find_latest(pat)
+    matches_exact = sorted(
+        glob.glob(pat_exact), key=lambda p: os.path.getmtime(p), reverse=True
+    )
+    if matches_exact:
+        path = matches_exact[0]
+    else:
+        # Fallback: any topic_gene_matrix file for this dataset.
+        pat_any = os.path.join(
+            topic_dir, f"{dataset}*topic_gene_matrix*.pkl"
+        )
+        path = _find_latest(pat_any)
+
     with open(path, "rb") as f:
         mat = pickle.load(f)
     mat = np.asarray(mat, dtype=np.float32)
@@ -34,11 +51,26 @@ def _load_topic_gene_matrix(results_dir: str, dataset: str, n_topics: int) -> np
 
 
 def _load_cell_topic_matrix(results_dir: str, dataset: str, n_topics: int) -> np.ndarray:
-    """Load cell-topic matrix (theta) for a dataset."""
-    pat = os.path.join(
-        results_dir, "cell_topic", f"{dataset}*cell_topic_matrix*.pkl"
+    """Load cell-topic matrix (theta) for a dataset.
+
+    Prefer the file whose name encodes the requested n_topics (e.g.
+    *cell_topic_matrix_50.pkl when n_topics=50). If no such file exists,
+    fall back to the most recent cell_topic_matrix file.
+    """
+    topic_dir = os.path.join(results_dir, "cell_topic")
+    pat_exact = os.path.join(
+        topic_dir, f"{dataset}*cell_topic_matrix_{n_topics}.pkl"
     )
-    path = _find_latest(pat)
+    matches_exact = sorted(
+        glob.glob(pat_exact), key=lambda p: os.path.getmtime(p), reverse=True
+    )
+    if matches_exact:
+        path = matches_exact[0]
+    else:
+        pat_any = os.path.join(
+            topic_dir, f"{dataset}*cell_topic_matrix*.pkl"
+        )
+        path = _find_latest(pat_any)
     with open(path, "rb") as f:
         mat = pickle.load(f)
     mat = np.asarray(mat, dtype=np.float32)
