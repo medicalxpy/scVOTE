@@ -1,10 +1,13 @@
 import os
 import pickle
-from typing import Optional
+from typing import Optional, Tuple
 
 import glob
 import numpy as np
 import scanpy as sc
+from scipy.stats import chi2
+from sklearn.metrics import silhouette_score
+from sklearn.neighbors import NearestNeighbors
 
 from incremental import TopicStore
 
@@ -83,6 +86,150 @@ def _load_obs_labels(
     return batch, cell_type
 
 
+def _compute_neighbors(
+    X: np.ndarray,
+    n_neighbors: int = 30,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute k-nearest neighbors indices and distances in topic space."""
+    n_cells = X.shape[0]
+    if n_cells <= 1:
+        raise ValueError("Need at least 2 cells to compute neighbors.")
+    k = max(1, min(n_neighbors, n_cells - 1))
+    nn = NearestNeighbors(n_neighbors=k, metric="euclidean")
+    nn.fit(X)
+    distances, indices = nn.kneighbors(X)
+    return indices, distances
+
+
+def _compute_asw(X: np.ndarray, labels: Optional[np.ndarray]) -> float:
+    """Average silhouette width for given labels (higher = better separated)."""
+    if labels is None:
+        return float("nan")
+    labels = np.asarray(labels)
+    if labels.ndim != 1 or labels.shape[0] != X.shape[0]:
+        raise ValueError("Labels must be 1D and match number of rows in X.")
+    if np.unique(labels).size < 2:
+        return float("nan")
+    return float(silhouette_score(X, labels, metric="euclidean"))
+
+
+def _compute_lisi(
+    indices: np.ndarray,
+    distances: np.ndarray,
+    labels: np.ndarray,
+) -> float:
+    """Compute (batch or cell-type) LISI from neighbor graph.
+
+    For each cell, we compute a distance-weighted label distribution over
+    its neighbors and then take the inverse Simpson index. LISI is the
+    average of these values across cells.
+    """
+    labels = np.asarray(labels)
+    if labels.ndim != 1:
+        raise ValueError("Labels for LISI must be a 1D array.")
+
+    n_cells, _ = indices.shape
+    lisi_values = np.empty(n_cells, dtype=np.float64)
+
+    for i in range(n_cells):
+        neigh_idx = indices[i]
+        neigh_dist = distances[i]
+        neigh_labels = labels[neigh_idx]
+
+        # Convert distances to positive weights; use a local scale for stability.
+        sigma = np.median(neigh_dist) + 1e-8
+        weights = np.exp(-neigh_dist / sigma)
+        w_sum = weights.sum()
+        if w_sum <= 0:
+            lisi_values[i] = np.nan
+            continue
+        weights /= w_sum
+
+        uniq, inv = np.unique(neigh_labels, return_inverse=True)
+        probs = np.zeros(uniq.shape[0], dtype=np.float64)
+        for j, w in enumerate(weights):
+            probs[inv[j]] += w
+        lisi_values[i] = 1.0 / np.sum(probs ** 2)
+
+    if np.all(np.isnan(lisi_values)):
+        return float("nan")
+    return float(np.nanmean(lisi_values))
+
+
+def _compute_kbet(
+    indices: np.ndarray,
+    batch_labels: np.ndarray,
+    alpha: float = 0.05,
+) -> float:
+    """Approximate kBET acceptance rate (higher = better batch mixing)."""
+    batch_labels = np.asarray(batch_labels)
+    if batch_labels.ndim != 1:
+        raise ValueError("Batch labels for kBET must be a 1D array.")
+
+    n_cells, _ = indices.shape
+    uniq, counts = np.unique(batch_labels, return_counts=True)
+    if uniq.size < 2:
+        return float("nan")
+
+    total = counts.sum()
+    global_freq = counts / total
+    label_to_pos = {lab: i for i, lab in enumerate(uniq)}
+
+    rejected = 0
+    tested = 0
+
+    for i in range(n_cells):
+        neigh_idx = indices[i]
+        neigh_labels = batch_labels[neigh_idx]
+        loc_counts = np.zeros_like(counts, dtype=np.float64)
+        for lab in neigh_labels:
+            loc_counts[label_to_pos[lab]] += 1.0
+        m = loc_counts.sum()
+        if m == 0:
+            continue
+        expected = global_freq * m
+        # Avoid cells where expected counts are essentially zero.
+        if np.any(expected < 1e-8):
+            continue
+        stat = np.sum((loc_counts - expected) ** 2 / expected)
+        df = max(1, np.count_nonzero(expected) - 1)
+        pval = chi2.sf(stat, df)
+        tested += 1
+        if pval < alpha:
+            rejected += 1
+
+    if tested == 0:
+        return float("nan")
+    return float(1.0 - rejected / tested)
+
+
+def _compute_batch_metrics(
+    X: np.ndarray,
+    batch_labels: np.ndarray,
+    cell_types: Optional[np.ndarray] = None,
+    n_neighbors: int = 30,
+    alpha: float = 0.05,
+) -> dict:
+    """Compute kBET, LISI, and ASW metrics for batch effect assessment."""
+    indices, distances = _compute_neighbors(X, n_neighbors=n_neighbors)
+
+    metrics = {
+        "kBET_batch": _compute_kbet(indices, batch_labels, alpha=alpha),
+        "LISI_batch": _compute_lisi(indices, distances, batch_labels),
+        "ASW_batch": _compute_asw(X, batch_labels),
+        "LISI_cell_type": float("nan"),
+        "ASW_cell_type": float("nan"),
+    }
+
+    if cell_types is not None:
+        ct = np.asarray(cell_types)
+        if np.unique(ct).size >= 2:
+            metrics["LISI_cell_type"] = _compute_lisi(indices, distances, ct)
+            metrics["ASW_cell_type"] = _compute_asw(X, ct)
+
+    return metrics
+
+
 def plot_batch_effect_umap_single(
     *,
     dataset: str,
@@ -156,6 +303,15 @@ def plot_batch_effect_umap_single(
         expected_n_cells=effective_n_cells,
     )
 
+    # Quantitative batch-effect metrics (pre-filter).
+    metrics_pre = _compute_batch_metrics(
+        theta,
+        batch_labels=batch_labels,
+        cell_types=cell_types,
+        n_neighbors=30,
+        alpha=0.05,
+    )
+
     # Pre-filter UMAP: all topics.
     adata_pre = sc.AnnData(X=theta)
     adata_pre.obs["batch"] = batch_labels
@@ -180,6 +336,29 @@ def plot_batch_effect_umap_single(
 
     # Post-filter UMAP: keep only the non-filtered topics.
     theta_post = theta[:, keep_indices]
+
+    # Quantitative batch-effect metrics (post-filter).
+    metrics_post = _compute_batch_metrics(
+        theta_post,
+        batch_labels=batch_labels,
+        cell_types=cell_types,
+        n_neighbors=30,
+        alpha=0.05,
+    )
+
+    def _fmt_metrics(name: str, m: dict) -> str:
+        return (
+            f"{name}: "
+            f"kBET_batch={m.get('kBET_batch', float('nan')):.4f}, "
+            f"LISI_batch={m.get('LISI_batch', float('nan')):.4f}, "
+            f"ASW_batch={m.get('ASW_batch', float('nan')):.4f}, "
+            f"LISI_cell_type={m.get('LISI_cell_type', float('nan')):.4f}, "
+            f"ASW_cell_type={m.get('ASW_cell_type', float('nan')):.4f}"
+        )
+
+    print(f"[{tag}] Pre-filter metrics - {_fmt_metrics('pre', metrics_pre)}")
+    print(f"[{tag}] Post-filter metrics - {_fmt_metrics('post', metrics_post)}")
+
     adata_post = sc.AnnData(X=theta_post)
     adata_post.obs["batch"] = batch_labels
     if cell_types is not None:
