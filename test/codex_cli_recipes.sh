@@ -142,7 +142,7 @@
 #   --early_stopping \
 #   --verbose
 
-# （2）只跑 evaluation（已训练好后）
+# （2）只跑 evaluation（已训练好后，除了 ARI/NMI，还会输出 ORA/GSEA、TC_extrinsic、TD 等指标）
 # python evaluation.py \
 #   --adata_path data/PBMC4k.h5ad \
 #   --results_dir results \
@@ -163,4 +163,3 @@
 ###############################################################################
 # End of cheat sheet
 ###############################################################################
-

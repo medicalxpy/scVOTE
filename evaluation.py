@@ -30,6 +30,7 @@ import json
 import os
 import pickle
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -382,6 +383,121 @@ def _gsea_from_gene_topics(
     return float(np.mean(best_es_abs_per_topic))
 
 
+def _compute_tc_extrinsic_from_genesets(
+    gene_topic_df: pd.DataFrame,
+    genesets: Dict[str, set],
+    top_n: int = 10,
+    eps: float = 1e-12,
+) -> float:
+    """
+    Extrinsic Topic Coherence based on pathway-style genesets.
+
+    For each topic, we take the top-n genes (by weight) and compute
+    NPMI over pathway co-occurrence induced by the genesets (e.g., GO_BP).
+    """
+    if gene_topic_df.empty:
+        raise ValueError("Gene-topic matrix is empty; cannot compute TC.")
+    if not genesets:
+        raise ValueError("Geneset dictionary is empty; cannot compute TC.")
+
+    # Normalize gene names and collapse duplicates, as in GSEA computation.
+    df = gene_topic_df.copy()
+    df.index = df.index.map(lambda x: str(x).upper())
+    df = df.groupby(df.index).mean()
+
+    gene_names = df.index.to_numpy()
+    gene_topic = df.to_numpy().T  # topics × genes
+    n_topics, n_genes = gene_topic.shape
+
+    # Build gene -> set[pathway_name] mapping.
+    gene_to_paths: Dict[str, set] = {}
+    for path_name, gs_genes in genesets.items():
+        for g in gs_genes:
+            gu = str(g).upper()
+            gene_to_paths.setdefault(gu, set()).add(path_name)
+    total_pathways = len(genesets)
+    if total_pathways <= 0:
+        raise ValueError("No pathways available for TC computation.")
+
+    tc_values: List[float] = []
+
+    for t in range(n_topics):
+        weights = gene_topic[t, :]
+
+        if top_n >= n_genes:
+            top_idx = np.argsort(weights)[::-1]
+        else:
+            top_idx = np.argpartition(weights, -top_n)[-top_n:]
+            top_idx = top_idx[np.argsort(weights[top_idx])[::-1]]
+
+        top_genes = gene_names[top_idx]
+
+        npmi_scores: List[float] = []
+        for g1, g2 in combinations(top_genes, 2):
+            p1 = gene_to_paths.get(str(g1).upper())
+            p2 = gene_to_paths.get(str(g2).upper())
+            if not p1 or not p2:
+                continue
+
+            p_i = len(p1) / float(total_pathways)
+            p_j = len(p2) / float(total_pathways)
+            inter = p1 & p2
+            if not inter:
+                continue
+
+            p_ij = len(inter) / float(total_pathways)
+            if p_i <= eps or p_j <= eps or p_ij <= eps:
+                continue
+
+            pmi = np.log(p_ij / (p_i * p_j) + eps)
+            npmi = pmi / (-np.log(p_ij + eps))
+            npmi_scores.append(float(npmi))
+
+        tc_values.append(float(np.mean(npmi_scores)) if npmi_scores else np.nan)
+
+    valid_tc = [x for x in tc_values if not np.isnan(x)]
+    if not valid_tc:
+        return float("nan")
+    return float(np.mean(valid_tc))
+
+
+def _compute_topic_diversity(
+    gene_topic_df: pd.DataFrame,
+    top_n: int = 10,
+) -> float:
+    """
+    Topic Diversity: fraction of unique genes in top-k sets across all topics.
+    """
+    if gene_topic_df.empty:
+        raise ValueError("Gene-topic matrix is empty; cannot compute TD.")
+
+    gene_topic = gene_topic_df.to_numpy().T  # topics × genes
+    n_topics, n_genes = gene_topic.shape
+
+    if n_topics == 0 or n_genes == 0:
+        raise ValueError("Gene-topic matrix has zero topics or genes.")
+
+    all_top_idx: List[int] = []
+
+    for t in range(n_topics):
+        weights = gene_topic[t, :]
+
+        if top_n >= n_genes:
+            idx = np.argsort(weights)[::-1]
+        else:
+            idx = np.argpartition(weights, -top_n)[-top_n:]
+            idx = idx[np.argsort(weights[idx])[::-1]]
+
+        all_top_idx.extend(idx.tolist())
+
+    if not all_top_idx:
+        return float("nan")
+
+    all_top_idx_arr = np.asarray(all_top_idx, dtype=int)
+    td_value = np.unique(all_top_idx_arr).size / float(n_topics * top_n)
+    return float(td_value)
+
+
 def _scan_resolutions_for_best_ari(
     adata: "sc.AnnData", label_key: str, res_min: float, res_max: float, res_step: float, seed: int
 ) -> Tuple[float, float, float]:
@@ -495,6 +611,26 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
         )
 
     if gene_topic_df is not None:
+        # TC / TD metrics based on genesets (using GO_BP as pathway-style sets).
+        try:
+            go_genesets_tc = _load_go_bp_genesets(base_dataset)
+            tc_extrinsic = _compute_tc_extrinsic_from_genesets(
+                gene_topic_df, go_genesets_tc, top_n=10
+            )
+            metrics["TC_extrinsic_GO_BP_top10"] = (
+                None if np.isnan(tc_extrinsic) else float(tc_extrinsic)
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[evaluation.py] TC (extrinsic, GO_BP) unavailable: {exc}")
+            metrics.setdefault("TC_extrinsic_GO_BP_top10", None)
+
+        try:
+            td_value = _compute_topic_diversity(gene_topic_df, top_n=10)
+            metrics["TD_top10"] = None if np.isnan(td_value) else float(td_value)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[evaluation.py] TD (top10) unavailable: {exc}")
+            metrics.setdefault("TD_top10", None)
+
         # ORA + SPP (cell-type marker genes)
         try:
             ct_genesets = _load_celltype_genesets(base_dataset)
@@ -614,6 +750,18 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
         )
     else:
         print("- SPP (ORA GO_BP): N/A")
+
+    tc_ext = metrics.get("TC_extrinsic_GO_BP_top10")
+    if tc_ext is not None:
+        print(f"- TC_extrinsic (GO_BP, top10): {tc_ext:.4f}")
+    else:
+        print("- TC_extrinsic (GO_BP, top10): N/A")
+
+    td_top10 = metrics.get("TD_top10")
+    if td_top10 is not None:
+        print(f"- TD (top10): {td_top10:.4f}")
+    else:
+        print("- TD (top10): N/A")
 
     gsea_markers = metrics.get("GSEA_markers")
     if gsea_markers is not None:
