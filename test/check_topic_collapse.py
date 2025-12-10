@@ -115,7 +115,6 @@ def _plot_topic_weights(
     plt.bar(x, topic_weights, color="#C8D2D7", edgecolor="#6E8484", linewidth=0.8)
     plt.xlabel("Topic index")
     plt.ylabel("Average topic weight")
-    plt.title(f"Topic weight distribution: {dataset} (K={n_topics})")
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
@@ -134,7 +133,6 @@ def _plot_topic_hierarchy(
 
     plt.figure(figsize=(10, 6))
     sch.dendrogram(Z, labels=labels, leaf_rotation=90)
-    plt.title(f"Topic hierarchy (Ward linkage): {dataset} (K={n_topics})")
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
@@ -205,7 +203,6 @@ def _plot_tsne_word_topic(
         label="Topics",
     )
     plt.axis("off")
-    plt.title(f"t-SNE of gene (•) and topic (▲) embeddings\n{dataset} (K={n_topics})")
     plt.legend(loc="best", frameon=False)
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
