@@ -161,5 +161,20 @@
 
 
 ###############################################################################
+# 8. Topic collapse 诊断（topic weights + hierarchy）
+###############################################################################
+
+# 对某个单次训练 / tuning 结果，检查是否存在 topic collapse：
+#   - 统计 topic weights 的 Shannon entropy / 有效 topic 数
+#   - 画出 topic weights 分布和 topic hierarchy dendrogram
+#
+# 示例：PBMC4k，查看 tuning 结果（RUN_TAG=PBMC4k_structure）
+# python test/check_topic_collapse.py \
+#   --results_dir results/tuning/PBMC4k_structure \
+#   --dataset PBMC4k_scVI_align \
+#   --n_topics 50
+
+
+###############################################################################
 # End of cheat sheet
 ###############################################################################
