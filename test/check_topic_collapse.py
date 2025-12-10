@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.cluster import hierarchy as sch
 from scipy.stats import entropy
+from sklearn.manifold import TSNE
 
 
 def _load_cell_topic_matrix(results_dir: Path, dataset: str, n_topics: int) -> np.ndarray:
@@ -52,6 +53,21 @@ def _load_topic_embeddings(results_dir: Path, dataset: str, n_topics: int) -> np
             f"Topic embeddings have shape {topic_emb.shape}, expected ({n_topics}, D)."
         )
     return topic_emb
+
+
+def _load_gene_embeddings(results_dir: Path, dataset: str, n_topics: int) -> np.ndarray:
+    """Load word/gene embeddings from a training run (if available)."""
+    path = results_dir / "gene_embedding" / f"{dataset}_gene_embeddings_{n_topics}.pkl"
+    if not path.exists():
+        raise FileNotFoundError(f"Gene embeddings not found: {path}")
+    with open(path, "rb") as f:
+        mat = pickle.load(f)
+    word_emb = np.asarray(mat, dtype=np.float64)
+    if word_emb.ndim != 2:
+        raise ValueError(
+            f"Gene embeddings have shape {word_emb.shape}, expected (V, D)."
+        )
+    return word_emb
 
 
 def _compute_topic_weight_metrics(theta: np.ndarray) -> Tuple[np.ndarray, float, float, float]:
@@ -124,6 +140,80 @@ def _plot_topic_hierarchy(
     plt.close()
 
 
+def _plot_tsne_word_topic(
+    word_emb: np.ndarray,
+    topic_emb: np.ndarray,
+    dataset: str,
+    n_topics: int,
+    out_path: Path,
+    max_words: int = 2000,
+    random_state: int = 0,
+) -> None:
+    """
+    Joint t-SNE visualization of word/gene embeddings (•) and topic embeddings (▲).
+
+    We subsample up to max_words word vectors to keep t-SNE tractable.
+    """
+    n_words = word_emb.shape[0]
+    # Subsample word embeddings if needed
+    if n_words > max_words:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(n_words, size=max_words, replace=False)
+        word_emb_sub = word_emb[idx]
+    else:
+        word_emb_sub = word_emb
+
+    # Stack word + topic embeddings
+    X = np.vstack([word_emb_sub, topic_emb])
+    n_word_sub = word_emb_sub.shape[0]
+    n_total = X.shape[0]
+
+    # Perplexity must be < n_total
+    perp = min(30.0, max(5.0, (n_total - 1) / 3.0))
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perp,
+        learning_rate="auto",
+        init="pca",
+        random_state=random_state,
+        n_iter=2000,
+    )
+    X_2d = tsne.fit_transform(X)
+
+    word_xy = X_2d[:n_word_sub]
+    topic_xy = X_2d[n_word_sub:]
+
+    plt.figure(figsize=(6, 6))
+    # Words / genes as blue dots
+    plt.scatter(
+        word_xy[:, 0],
+        word_xy[:, 1],
+        s=2,
+        c="tab:blue",
+        alpha=0.4,
+        linewidths=0,
+        label="Genes",
+    )
+    # Topics as red triangles
+    plt.scatter(
+        topic_xy[:, 0],
+        topic_xy[:, 1],
+        s=40,
+        c="tab:red",
+        marker="^",
+        edgecolor="k",
+        linewidths=0.5,
+        label="Topics",
+    )
+    plt.axis("off")
+    plt.title(f"t-SNE of gene (•) and topic (▲) embeddings\n{dataset} (K={n_topics})")
+    plt.legend(loc="best", frameon=False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Check topic collapse via topic weights and hierarchy for a scFASTopic run."
@@ -151,6 +241,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Output directory for diagnostic plots (default: <results_dir>/topic_diagnostics).",
+    )
+    p.add_argument(
+        "--no_tsne",
+        action="store_true",
+        help="Disable t-SNE visualization of gene/topic embeddings.",
     )
     return p.parse_args()
 
@@ -192,9 +287,26 @@ def main() -> int:
     _plot_topic_hierarchy(topic_emb, args.dataset, args.n_topics, hier_path)
     print(f"💾 Saved topic hierarchy plot: {hier_path}")
 
+    # Joint t-SNE of word/topic embeddings
+    if not args.no_tsne:
+        try:
+            word_emb = _load_gene_embeddings(results_dir, args.dataset, args.n_topics)
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️ Skipping t-SNE (gene embeddings unavailable): {exc}")
+        else:
+            tsne_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_gene_topic.png"
+            print("🌀 Running t-SNE for gene/topic embeddings (this may take a while)...")
+            _plot_tsne_word_topic(
+                word_emb=word_emb,
+                topic_emb=topic_emb,
+                dataset=args.dataset,
+                n_topics=args.n_topics,
+                out_path=tsne_path,
+            )
+            print(f"💾 Saved t-SNE plot: {tsne_path}")
+
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
