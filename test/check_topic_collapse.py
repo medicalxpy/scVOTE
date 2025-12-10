@@ -174,10 +174,8 @@ def _plot_tsne_word_topic(
     tsne = TSNE(
         n_components=2,
         perplexity=perp,
-        learning_rate="auto",
         init="pca",
         random_state=random_state,
-        n_iter=2000,
     )
     X_2d = tsne.fit_transform(X)
 
