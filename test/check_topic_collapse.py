@@ -138,6 +138,13 @@ def _plot_topic_hierarchy(
     plt.close()
 
 
+def _l2_normalize_rows(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """Row-wise L2 normalization."""
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms = np.maximum(norms, eps)
+    return X / norms
+
+
 def _plot_tsne_word_topic(
     word_emb: np.ndarray,
     topic_emb: np.ndarray,
@@ -145,6 +152,7 @@ def _plot_tsne_word_topic(
     n_topics: int,
     out_path: Path,
     max_words: int = 2000,
+    normalize: bool = False,
     random_state: int = 0,
 ) -> None:
     """
@@ -163,6 +171,8 @@ def _plot_tsne_word_topic(
 
     # Stack word + topic embeddings
     X = np.vstack([word_emb_sub, topic_emb])
+    if normalize:
+        X = _l2_normalize_rows(X)
     n_word_sub = word_emb_sub.shape[0]
     n_total = X.shape[0]
 
@@ -230,6 +240,7 @@ def _plot_tsne_cell_topic(
     n_topics: int,
     out_path: Path,
     max_cells: int = 5000,
+    normalize: bool = False,
     random_state: int = 0,
 ) -> None:
     """
@@ -246,6 +257,8 @@ def _plot_tsne_cell_topic(
         cell_emb_sub = cell_emb
 
     X = np.vstack([cell_emb_sub, topic_emb])
+    if normalize:
+        X = _l2_normalize_rows(X)
     n_cell_sub = cell_emb_sub.shape[0]
     n_total = X.shape[0]
 
@@ -300,6 +313,7 @@ def _plot_tsne_cell_gene_topic(
     out_path: Path,
     max_cells: int = 5000,
     max_genes: int = 2000,
+    normalize: bool = False,
     random_state: int = 0,
 ) -> None:
     """
@@ -328,6 +342,8 @@ def _plot_tsne_cell_gene_topic(
         word_emb_sub = word_emb
 
     X = np.vstack([cell_emb_sub, word_emb_sub, topic_emb])
+    if normalize:
+        X = _l2_normalize_rows(X)
     n_cell_sub = cell_emb_sub.shape[0]
     n_word_sub = word_emb_sub.shape[0]
     n_total = X.shape[0]
@@ -482,8 +498,9 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️ Skipping t-SNE (gene embeddings unavailable): {exc}")
         else:
+            # Raw scale
             tsne_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_gene_topic.png"
-            print("🌀 Running t-SNE for gene/topic embeddings (this may take a while)...")
+            print("🌀 Running t-SNE (raw) for gene/topic embeddings (this may take a while)...")
             _plot_tsne_word_topic(
                 word_emb=word_emb,
                 topic_emb=topic_emb,
@@ -493,6 +510,19 @@ def main() -> int:
             )
             print(f"💾 Saved t-SNE plot: {tsne_path}")
 
+            # L2-normalized
+            tsne_path_norm = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_gene_topic_norm.png"
+            print("🌀 Running t-SNE (L2-normalized) for gene/topic embeddings...")
+            _plot_tsne_word_topic(
+                word_emb=word_emb,
+                topic_emb=topic_emb,
+                dataset=args.dataset,
+                n_topics=args.n_topics,
+                out_path=tsne_path_norm,
+                normalize=True,
+            )
+            print(f"💾 Saved t-SNE plot: {tsne_path_norm}")
+
         # Optional: joint t-SNE of cell/topic embeddings, if cell_emb is provided.
         if args.cell_emb:
             try:
@@ -500,8 +530,9 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"⚠️ Skipping t-SNE (cell embeddings unavailable): {exc}")
             else:
+                # Raw scale
                 tsne_cell_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_topic.png"
-                print("🌀 Running t-SNE for cell/topic embeddings (this may take a while)...")
+                print("🌀 Running t-SNE (raw) for cell/topic embeddings (this may take a while)...")
                 _plot_tsne_cell_topic(
                     cell_emb=cell_emb,
                     topic_emb=topic_emb,
@@ -512,11 +543,26 @@ def main() -> int:
                 )
                 print(f"💾 Saved t-SNE plot: {tsne_cell_path}")
 
+                # L2-normalized
+                tsne_cell_path_norm = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_topic_norm.png"
+                print("🌀 Running t-SNE (L2-normalized) for cell/topic embeddings...")
+                _plot_tsne_cell_topic(
+                    cell_emb=cell_emb,
+                    topic_emb=topic_emb,
+                    dataset=args.dataset,
+                    n_topics=args.n_topics,
+                    out_path=tsne_cell_path_norm,
+                    max_cells=args.max_cells_tsne,
+                    normalize=True,
+                )
+                print(f"💾 Saved t-SNE plot: {tsne_cell_path_norm}")
+
                 # If both cell and gene embeddings are available, also run
                 # combined cell+gene+topic t-SNE.
                 if word_emb is not None:
+                    # Raw scale
                     tsne_all_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_gene_topic.png"
-                    print("🌀 Running t-SNE for cell/gene/topic embeddings (this may take a while)...")
+                    print("🌀 Running t-SNE (raw) for cell/gene/topic embeddings (this may take a while)...")
                     _plot_tsne_cell_gene_topic(
                         cell_emb=cell_emb,
                         word_emb=word_emb,
@@ -528,6 +574,22 @@ def main() -> int:
                         max_genes=2000,
                     )
                     print(f"💾 Saved t-SNE plot: {tsne_all_path}")
+
+                    # L2-normalized
+                    tsne_all_path_norm = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_gene_topic_norm.png"
+                    print("🌀 Running t-SNE (L2-normalized) for cell/gene/topic embeddings...")
+                    _plot_tsne_cell_gene_topic(
+                        cell_emb=cell_emb,
+                        word_emb=word_emb,
+                        topic_emb=topic_emb,
+                        dataset=args.dataset,
+                        n_topics=args.n_topics,
+                        out_path=tsne_all_path_norm,
+                        max_cells=args.max_cells_tsne,
+                        max_genes=2000,
+                        normalize=True,
+                    )
+                    print(f"💾 Saved t-SNE plot: {tsne_all_path_norm}")
 
     return 0
 
