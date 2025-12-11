@@ -209,6 +209,88 @@ def _plot_tsne_word_topic(
     plt.close()
 
 
+def _load_cell_embeddings(path: Path) -> np.ndarray:
+    """Load cell/document embeddings from a .pkl file."""
+    if not path.exists():
+        raise FileNotFoundError(f"Cell embeddings not found: {path}")
+    with open(path, "rb") as f:
+        mat = pickle.load(f)
+    cell_emb = np.asarray(mat, dtype=np.float64)
+    if cell_emb.ndim != 2:
+        raise ValueError(
+            f"Cell embeddings have shape {cell_emb.shape}, expected (N, D)."
+        )
+    return cell_emb
+
+
+def _plot_tsne_cell_topic(
+    cell_emb: np.ndarray,
+    topic_emb: np.ndarray,
+    dataset: str,
+    n_topics: int,
+    out_path: Path,
+    max_cells: int = 5000,
+    random_state: int = 0,
+) -> None:
+    """
+    Joint t-SNE visualization of cell embeddings (•) and topic embeddings (▲).
+
+    This mirrors Fig. 3(c,d) style: many document points plus topic centroids.
+    """
+    n_cells = cell_emb.shape[0]
+    if n_cells > max_cells:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(n_cells, size=max_cells, replace=False)
+        cell_emb_sub = cell_emb[idx]
+    else:
+        cell_emb_sub = cell_emb
+
+    X = np.vstack([cell_emb_sub, topic_emb])
+    n_cell_sub = cell_emb_sub.shape[0]
+    n_total = X.shape[0]
+
+    perp = min(30.0, max(5.0, (n_total - 1) / 3.0))
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perp,
+        init="pca",
+        random_state=random_state,
+    )
+    X_2d = tsne.fit_transform(X)
+
+    cell_xy = X_2d[:n_cell_sub]
+    topic_xy = X_2d[n_cell_sub:]
+
+    plt.figure(figsize=(6, 6))
+    # Cells/documents as purple points
+    plt.scatter(
+        cell_xy[:, 0],
+        cell_xy[:, 1],
+        s=2,
+        c="tab:purple",
+        alpha=0.5,
+        linewidths=0,
+        label="Cells",
+    )
+    # Topics as red triangles
+    plt.scatter(
+        topic_xy[:, 0],
+        topic_xy[:, 1],
+        s=40,
+        c="tab:red",
+        marker="^",
+        edgecolor="k",
+        linewidths=0.5,
+        label="Topics",
+    )
+    plt.axis("off")
+    plt.legend(loc="best", frameon=False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Check topic collapse via topic weights and hierarchy for a scFASTopic run."
@@ -241,6 +323,18 @@ def parse_args() -> argparse.Namespace:
         "--no_tsne",
         action="store_true",
         help="Disable t-SNE visualization of gene/topic embeddings.",
+    )
+    p.add_argument(
+        "--cell_emb",
+        type=str,
+        default=None,
+        help="Optional path to cell/document embeddings (.pkl) for cell-topic t-SNE.",
+    )
+    p.add_argument(
+        "--max_cells_tsne",
+        type=int,
+        default=5000,
+        help="Maximum number of cells to subsample for cell-topic t-SNE (default: 5000).",
     )
     return p.parse_args()
 
@@ -299,6 +393,25 @@ def main() -> int:
                 out_path=tsne_path,
             )
             print(f"💾 Saved t-SNE plot: {tsne_path}")
+
+        # Optional: joint t-SNE of cell/topic embeddings, if cell_emb is provided.
+        if args.cell_emb:
+            try:
+                cell_emb = _load_cell_embeddings(Path(args.cell_emb))
+            except Exception as exc:  # noqa: BLE001
+                print(f"⚠️ Skipping t-SNE (cell embeddings unavailable): {exc}")
+            else:
+                tsne_cell_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_topic.png"
+                print("🌀 Running t-SNE for cell/topic embeddings (this may take a while)...")
+                _plot_tsne_cell_topic(
+                    cell_emb=cell_emb,
+                    topic_emb=topic_emb,
+                    dataset=args.dataset,
+                    n_topics=args.n_topics,
+                    out_path=tsne_cell_path,
+                    max_cells=args.max_cells_tsne,
+                )
+                print(f"💾 Saved t-SNE plot: {tsne_cell_path}")
 
     return 0
 
