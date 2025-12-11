@@ -291,6 +291,104 @@ def _plot_tsne_cell_topic(
     plt.close()
 
 
+def _plot_tsne_cell_gene_topic(
+    cell_emb: np.ndarray,
+    word_emb: np.ndarray,
+    topic_emb: np.ndarray,
+    dataset: str,
+    n_topics: int,
+    out_path: Path,
+    max_cells: int = 5000,
+    max_genes: int = 2000,
+    random_state: int = 0,
+) -> None:
+    """
+    Joint t-SNE of cell, gene, and topic embeddings on a single 2D plane.
+
+    - Cells: purple points
+    - Genes: blue points
+    - Topics: red triangles
+    """
+    # Subsample cells
+    n_cells = cell_emb.shape[0]
+    if n_cells > max_cells:
+        rng = np.random.default_rng(random_state)
+        idx_cells = rng.choice(n_cells, size=max_cells, replace=False)
+        cell_emb_sub = cell_emb[idx_cells]
+    else:
+        cell_emb_sub = cell_emb
+
+    # Subsample genes
+    n_genes = word_emb.shape[0]
+    if n_genes > max_genes:
+        rng = np.random.default_rng(random_state + 1)
+        idx_genes = rng.choice(n_genes, size=max_genes, replace=False)
+        word_emb_sub = word_emb[idx_genes]
+    else:
+        word_emb_sub = word_emb
+
+    X = np.vstack([cell_emb_sub, word_emb_sub, topic_emb])
+    n_cell_sub = cell_emb_sub.shape[0]
+    n_word_sub = word_emb_sub.shape[0]
+    n_total = X.shape[0]
+
+    perp = min(30.0, max(5.0, (n_total - 1) / 3.0))
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perp,
+        init="pca",
+        random_state=random_state,
+    )
+    X_2d = tsne.fit_transform(X)
+
+    cell_xy = X_2d[:n_cell_sub]
+    word_xy = X_2d[n_cell_sub:n_cell_sub + n_word_sub]
+    topic_xy = X_2d[n_cell_sub + n_word_sub:]
+
+    plt.figure(figsize=(6, 6))
+
+    # Cells as purple points
+    plt.scatter(
+        cell_xy[:, 0],
+        cell_xy[:, 1],
+        s=2,
+        c="tab:purple",
+        alpha=0.5,
+        linewidths=0,
+        label="Cells",
+    )
+
+    # Genes as blue points
+    plt.scatter(
+        word_xy[:, 0],
+        word_xy[:, 1],
+        s=2,
+        c="tab:blue",
+        alpha=0.4,
+        linewidths=0,
+        label="Genes",
+    )
+
+    # Topics as red triangles
+    plt.scatter(
+        topic_xy[:, 0],
+        topic_xy[:, 1],
+        s=40,
+        c="tab:red",
+        marker="^",
+        edgecolor="k",
+        linewidths=0.5,
+        label="Topics",
+    )
+
+    plt.axis("off")
+    plt.legend(loc="best", frameon=False)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Check topic collapse via topic weights and hierarchy for a scFASTopic run."
@@ -378,6 +476,7 @@ def main() -> int:
 
     # Joint t-SNE of word/topic embeddings
     if not args.no_tsne:
+        word_emb = None
         try:
             word_emb = _load_gene_embeddings(results_dir, args.dataset, args.n_topics)
         except Exception as exc:  # noqa: BLE001
@@ -412,6 +511,23 @@ def main() -> int:
                     max_cells=args.max_cells_tsne,
                 )
                 print(f"💾 Saved t-SNE plot: {tsne_cell_path}")
+
+                # If both cell and gene embeddings are available, also run
+                # combined cell+gene+topic t-SNE.
+                if word_emb is not None:
+                    tsne_all_path = out_dir / f"{args.dataset}_K{args.n_topics}_tsne_cell_gene_topic.png"
+                    print("🌀 Running t-SNE for cell/gene/topic embeddings (this may take a while)...")
+                    _plot_tsne_cell_gene_topic(
+                        cell_emb=cell_emb,
+                        word_emb=word_emb,
+                        topic_emb=topic_emb,
+                        dataset=args.dataset,
+                        n_topics=args.n_topics,
+                        out_path=tsne_all_path,
+                        max_cells=args.max_cells_tsne,
+                        max_genes=2000,
+                    )
+                    print(f"💾 Saved t-SNE plot: {tsne_all_path}")
 
     return 0
 
