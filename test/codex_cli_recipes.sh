@@ -33,8 +33,8 @@
 # - 设置环境变量 RUN_TAG 即可（train.sh 会自动将 output_dir 指向 results/tuning/RUN_TAG）
 # - 例：PBMC4k + structure + K=50，输出到 results/tuning/PBMC4k_structure_K50
 #
-# nohup bash -c 'RUN_TAG=PBMC4k_structure_K50 N_TOPICS=50 STRUCTURE_ALIGN=1 CONTRASTIVE_ALIGN=0 bash train.sh PBMC4k' \
-#   > logs/train_PBMC4k_structure_K50.log 2>&1 &
+nohup bash -c 'RUN_TAG=PBMC4k_contrastive_K50 N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 bash train.sh PBMC4k' \
+  > logs/train_PBMC4k_structure_K50.log 2>&1 &
 #
 # 对应训练产物的 dataset 名一般为：
 # - 有 alignment：<dataset>_vae_align（例如 PBMC4k_vae_align）
@@ -182,10 +182,11 @@
 #   - 画出 topic weights 分布和 topic hierarchy dendrogram
 #
 # 示例：PBMC4k，查看 tuning 结果（RUN_TAG=PBMC4k_structure）
-# python test/check_topic_collapse.py \
-#   --results_dir results/tuning/PBMC4k_structure \
-#   --dataset PBMC4k_vae_align \
-#   --n_topics 50
+python test/check_topic_collapse.py \
+  --results_dir results/tuning/PBMC4k_contrastive_K50 \
+  --dataset PBMC4k_vae_align \
+  --n_topics 50 \
+  --cell_emb results/cell_embedding/PBMC4k_vae.pkl 
 
 
 ###############################################################################
