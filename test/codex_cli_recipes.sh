@@ -29,6 +29,17 @@
 # 2. Single-dataset training (structure alignment; 50 topics)
 ###############################################################################
 
+# 将结果写到 results/tuning/<RUN_TAG>：
+# - 设置环境变量 RUN_TAG 即可（train.sh 会自动将 output_dir 指向 results/tuning/RUN_TAG）
+# - 例：PBMC4k + structure + K=50，输出到 results/tuning/PBMC4k_structure_K50
+#
+# nohup bash -c 'RUN_TAG=PBMC4k_structure_K50 N_TOPICS=50 STRUCTURE_ALIGN=1 CONTRASTIVE_ALIGN=0 bash train.sh PBMC4k' \
+#   > logs/train_PBMC4k_structure_K50.log 2>&1 &
+#
+# 对应训练产物的 dataset 名一般为：
+# - 有 alignment：<dataset>_vae_align（例如 PBMC4k_vae_align）
+# - 无 alignment：<dataset>_vae（例如 PBMC4k_vae）
+
 # PBMC4k (structure)
 # nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=1 CONTRASTIVE_ALIGN=0 bash train.sh PBMC4k' \
 #   > logs/train_PBMC4k_structure.log 2>&1 &
@@ -50,7 +61,7 @@
 # 3. Incremental alignment + topic filter（老 pipeline）
 ###############################################################################
 
-# 使用 PBMC4k_scVI_align / PBMC8k_scVI_align / PBMC12k_scVI_align 做增量 TopicStore 对齐，
+# 使用 PBMC4k_vae_align / PBMC8k_vae_align / PBMC12k_vae_align 做增量 TopicStore 对齐，
 # 第二次调用带 --filter_background，会使用“稀疏度 + coherence” 的 topic filter。
 
 # nohup bash incremental.sh > logs/incremental_align.log 2>&1 &
@@ -67,7 +78,7 @@
 #   - obs 中 batch 列为 batch，cell type 列为 cell_type
 
 # python -m incremental_eval.batch_effect_single \
-#   --dataset PBMC12k_scVI_align \
+#   --dataset PBMC12k_vae_align \
 #   --results_dir results/tuning/PBMC12k_structure \
 #   --adata data/PBMC12k.h5ad \
 #   --batch_key batch \
@@ -89,8 +100,8 @@
 # 按 dataset_a/dataset_b 上色，观察 filter 前/后 batch 混合情况。
 
 # python -m incremental_eval.batch_effect \
-#   --dataset_a PBMC4k_scVI_align \
-#   --dataset_b PBMC8k_scVI_align \
+#   --dataset_a PBMC4k_vae_align \
+#   --dataset_b PBMC8k_vae_align \
 #   --results_dir_a results/tuning/PBMC4k_structure \
 #   --results_dir_b results/tuning/PBMC8k_structure \
 #   --adata_a data/PBMC4k.h5ad \
@@ -109,12 +120,12 @@
 # 6. 合并“相同 top-N gene”的 topics，并做 UMAP 对比
 ###############################################################################
 
-# 对单数据集（如 PBMC12k_scVI_align），如果发现有若干 topics 的 top-N gene 完全相同，
+# 对单数据集（如 PBMC12k_vae_align），如果发现有若干 topics 的 top-N gene 完全相同，
 # 可以用下面命令把它们合并为一个 topic，并对比合并前/后的 UMAP：
 
 # 示例：PBMC12k，使用 top 15 genes 判定重复 topic
 # python -m incremental_eval.merge_duplicate_topics \
-#   --dataset PBMC12k_scVI_align \
+#   --dataset PBMC12k_vae_align \
 #   --results_dir results/tuning/PBMC12k_structure \
 #   --adata data/PBMC12k.h5ad \
 #   --n_topics 50 \
@@ -148,7 +159,7 @@
 # python evaluation.py \
 #   --adata_path data/PBMC4k.h5ad \
 #   --results_dir results \
-#   --dataset PBMC4k_scVI_align \
+#   --dataset PBMC4k_vae_align \
 #   --n_topics 50 \
 #   --label_key cell_type \
 #   --out_dir results/evaluation
@@ -157,7 +168,7 @@
 # python visualization.py \
 #   --adata_path data/PBMC4k.h5ad \
 #   --results_dir results \
-#   --dataset PBMC4k_scVI_align \
+#   --dataset PBMC4k_vae_align \
 #   --n_topics 50 \
 #   --out_dir results/visualization
 
@@ -173,7 +184,7 @@
 # 示例：PBMC4k，查看 tuning 结果（RUN_TAG=PBMC4k_structure）
 # python test/check_topic_collapse.py \
 #   --results_dir results/tuning/PBMC4k_structure \
-#   --dataset PBMC4k_scVI_align \
+#   --dataset PBMC4k_vae_align \
 #   --n_topics 50
 
 
