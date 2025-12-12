@@ -19,6 +19,7 @@ class SingleCellDataset(Dataset):
         self,
         counts,
         batch_index: np.ndarray,
+        cell_indices: Optional[np.ndarray] = None,
     ) -> None:
         if counts is None:
             raise ValueError("counts must not be None")
@@ -29,6 +30,15 @@ class SingleCellDataset(Dataset):
         self.batch_index = np.asarray(batch_index, dtype=np.int64)
 
         n = self.batch_index.shape[0]
+        if cell_indices is None:
+            self.cell_indices = np.arange(n, dtype=np.int64)
+        else:
+            self.cell_indices = np.asarray(cell_indices, dtype=np.int64)
+            if self.cell_indices.shape[0] != n:
+                raise ValueError(
+                    f"cell_indices has {self.cell_indices.shape[0]} entries but batch_index has {n}"
+                )
+
         if sp is not None and sp.issparse(self.counts):
             if self.counts.shape[0] != n:
                 raise ValueError(
@@ -45,12 +55,16 @@ class SingleCellDataset(Dataset):
     def __len__(self) -> int:  # type: ignore[override]
         return self.batch_index.shape[0]
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:  # type: ignore[override]
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # type: ignore[override]
         if sp is not None and sp.issparse(self.counts):
             row = self.counts[idx]
             x = row.toarray().ravel().astype(np.float32, copy=False)
         else:
             x = self.counts[idx].astype(np.float32, copy=False)
         b = self.batch_index[idx]
-        return torch.from_numpy(x), torch.tensor(b, dtype=torch.long)
-
+        cell_idx = self.cell_indices[idx]
+        return (
+            torch.from_numpy(x),
+            torch.tensor(b, dtype=torch.long),
+            torch.tensor(cell_idx, dtype=torch.long),
+        )

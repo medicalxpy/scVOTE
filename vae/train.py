@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import math
+import os
+import pickle
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 try:
@@ -73,6 +77,81 @@ class TrainState:
     patience_counter: int = 0
 
 
+def _load_genept_embeddings(path: str) -> Dict[str, np.ndarray]:
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    if not isinstance(data, dict):
+        raise TypeError(f"Expected a dict at {path}, got {type(data)}")
+    out: Dict[str, np.ndarray] = {}
+    for k, v in data.items():
+        try:
+            vec = np.asarray(v, dtype=np.float32)
+        except Exception:
+            continue
+        if vec.ndim != 1:
+            continue
+        out[str(k)] = vec
+    return out
+
+
+def _compute_weighted_cell_embeddings(
+    counts,
+    gene_names: np.ndarray,
+    gene_embeddings: Dict[str, np.ndarray],
+    *,
+    chunk_size: int = 4096,
+    eps: float = 1e-8,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    matched_idx = []
+    matched_vecs = []
+    ref_dim: Optional[int] = None
+
+    for i, g in enumerate(gene_names.tolist()):
+        if g not in gene_embeddings:
+            continue
+        vec = gene_embeddings[g]
+        if ref_dim is None:
+            ref_dim = int(vec.shape[0])
+        if int(vec.shape[0]) != ref_dim:
+            continue
+        matched_idx.append(i)
+        matched_vecs.append(vec)
+
+    if not matched_idx or ref_dim is None:
+        raise ValueError("No genes could be matched to the gene embedding dictionary.")
+
+    e_matched = np.stack(matched_vecs, axis=0).astype(np.float32, copy=False)
+    matched_idx_arr = np.asarray(matched_idx, dtype=np.int64)
+
+    n_cells = int(counts.shape[0])
+    out = np.zeros((n_cells, ref_dim), dtype=np.float32)
+    valid = np.zeros((n_cells,), dtype=bool)
+
+    if verbose:
+        print(f"[VAE] gene-embedding match: {len(matched_idx_arr)}/{len(gene_names)} genes")
+
+    for start in range(0, n_cells, chunk_size):
+        end = min(n_cells, start + chunk_size)
+        chunk = counts[start:end]
+        if sp is not None and sp.issparse(chunk):
+            chunk = chunk.tocsr()[:, matched_idx_arr]
+            denom = np.asarray(chunk.sum(axis=1)).ravel().astype(np.float32, copy=False)
+            numer = chunk @ e_matched
+            numer = np.asarray(numer, dtype=np.float32)
+        else:
+            chunk = np.asarray(chunk, dtype=np.float32)[:, matched_idx_arr]
+            denom = chunk.sum(axis=1).astype(np.float32, copy=False)
+            numer = chunk @ e_matched
+
+        ok = denom > 0
+        if np.any(ok):
+            out[start:end][ok] = numer[ok] / (denom[ok, None] + eps)
+            valid[start:end][ok] = True
+
+    return out, valid
+
+
 class VAEModel:
     """Trainable model wrapper with a familiar API."""
 
@@ -89,6 +168,10 @@ class VAEModel:
         dropout_rate: float = 0.1,
         gene_likelihood: str = "zinb",
         dispersion: str = "gene",
+        genept_path: str = "GenePT_emebdding_v2/GenePT_gene_protein_embedding_model_3_text.pickle",
+        genept_loss_weight: float = 1e-3,
+        genept_proj_dim: int = 256,
+        genept_proj_hidden: int = 1024,
         seed: int = 0,
         verbose: bool = False,
         device: Optional[str] = None,
@@ -127,6 +210,10 @@ class VAEModel:
         self._is_trained = False
 
         self._init_library_priors()
+        self.genept_path = genept_path
+        self.genept_loss_weight = float(genept_loss_weight)
+        self.genept_proj_dim = int(genept_proj_dim)
+        self.genept_proj_hidden = int(genept_proj_hidden)
 
     @staticmethod
     def setup_anndata(adata, **kwargs) -> None:
@@ -185,7 +272,48 @@ class VAEModel:
         self.config.min_delta = min_delta
         self.config.num_workers = num_workers
 
-        optimizer = torch.optim.Adam(self.module.parameters(), lr=lr)
+        genept_targets = None
+        genept_valid = None
+        genept_cell_projector: Optional[nn.Module] = None
+        genept_gene_projector: Optional[nn.Module] = None
+
+        if self.genept_loss_weight > 0 and self.genept_path:
+            if os.path.exists(self.genept_path):
+                try:
+                    gene_embeddings = _load_genept_embeddings(self.genept_path)
+                    gene_names = np.asarray(self.adata.var_names.tolist(), dtype=str)
+                    genept_targets_np, genept_valid_np = _compute_weighted_cell_embeddings(
+                        self.counts,
+                        gene_names,
+                        gene_embeddings,
+                        verbose=self.verbose,
+                    )
+                    genept_targets = torch.from_numpy(genept_targets_np)
+                    genept_valid = torch.from_numpy(genept_valid_np)
+
+                    in_dim = int(genept_targets.shape[1])
+                    genept_gene_projector = nn.Linear(in_dim, self.genept_proj_dim).to(self.device)
+                    genept_cell_projector = nn.Sequential(
+                        nn.Linear(self.config.n_latent, self.genept_proj_hidden),
+                        nn.ReLU(),
+                        nn.Linear(self.genept_proj_hidden, self.genept_proj_dim),
+                    ).to(self.device)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[VAE] gene-embedding alignment disabled: {e}")
+                    genept_targets = None
+                    genept_valid = None
+            else:
+                if self.verbose:
+                    print(f"[VAE] gene-embedding file not found: {self.genept_path}")
+
+        params = list(self.module.parameters())
+        if genept_cell_projector is not None:
+            params += list(genept_cell_projector.parameters())
+        if genept_gene_projector is not None:
+            params += list(genept_gene_projector.parameters())
+
+        optimizer = torch.optim.Adam(params, lr=lr)
 
         n = int(self.adata.n_obs)
         train_idx, val_idx = _split_indices(n, validation_fraction, self.seed)
@@ -195,8 +323,8 @@ class VAEModel:
         train_b = self.batch_index[train_idx]
         val_b = self.batch_index[val_idx]
 
-        train_ds = SingleCellDataset(train_counts, train_b)
-        val_ds = SingleCellDataset(val_counts, val_b)
+        train_ds = SingleCellDataset(train_counts, train_b, cell_indices=train_idx)
+        val_ds = SingleCellDataset(val_counts, val_b, cell_indices=val_idx)
 
         train_dl = DataLoader(
             train_ds,
@@ -218,15 +346,37 @@ class VAEModel:
 
         for epoch in range(1, max_epochs + 1):
             self.module.train()
+            if genept_cell_projector is not None:
+                genept_cell_projector.train()
+            if genept_gene_projector is not None:
+                genept_gene_projector.train()
             train_loss = 0.0
             n_batches = 0
 
-            for x, b in train_dl:
+            for x, b, cell_idx in train_dl:
                 x = x.to(self.device)
                 b = b.to(self.device)
 
                 optimizer.zero_grad()
-                loss, recon, kl_z, kl_l = self.module.loss(x, b)
+                base_loss, recon, kl_z, kl_l, z_mu = self.module.loss(x, b)
+                loss = base_loss
+                if (
+                    genept_targets is not None
+                    and genept_valid is not None
+                    and genept_cell_projector is not None
+                    and genept_gene_projector is not None
+                ):
+                    with torch.no_grad():
+                        tgt = genept_targets[cell_idx].to(self.device)
+                        ok = genept_valid[cell_idx].to(self.device)
+                    if ok.any().item():
+                        z_proj = genept_cell_projector(z_mu[ok])
+                        g_proj = genept_gene_projector(tgt[ok])
+                        z_proj = F.normalize(z_proj, dim=1, eps=1e-8)
+                        g_proj = F.normalize(g_proj, dim=1, eps=1e-8)
+                        align = 1.0 - torch.sum(z_proj * g_proj, dim=1)
+                        align_loss = align.mean()
+                        loss = loss + self.genept_loss_weight * align_loss
                 loss.backward()
                 optimizer.step()
 
@@ -239,13 +389,34 @@ class VAEModel:
             val_loss = None
             if do_val:
                 self.module.eval()
+                if genept_cell_projector is not None:
+                    genept_cell_projector.eval()
+                if genept_gene_projector is not None:
+                    genept_gene_projector.eval()
                 with torch.no_grad():
                     vloss = 0.0
                     vb = 0
-                    for x, b in val_dl:
+                    for x, b, cell_idx in val_dl:
                         x = x.to(self.device)
                         b = b.to(self.device)
-                        loss, _, _, _ = self.module.loss(x, b)
+                        base_loss, _, _, _, z_mu = self.module.loss(x, b)
+                        loss = base_loss
+                        if (
+                            genept_targets is not None
+                            and genept_valid is not None
+                            and genept_cell_projector is not None
+                            and genept_gene_projector is not None
+                        ):
+                            tgt = genept_targets[cell_idx].to(self.device)
+                            ok = genept_valid[cell_idx].to(self.device)
+                            if ok.any().item():
+                                z_proj = genept_cell_projector(z_mu[ok])
+                                g_proj = genept_gene_projector(tgt[ok])
+                                z_proj = F.normalize(z_proj, dim=1, eps=1e-8)
+                                g_proj = F.normalize(g_proj, dim=1, eps=1e-8)
+                                align = 1.0 - torch.sum(z_proj * g_proj, dim=1)
+                                align_loss = align.mean()
+                                loss = loss + self.genept_loss_weight * align_loss
                         vloss += float(loss.item())
                         vb += 1
                     val_loss = vloss / max(1, vb)
@@ -256,7 +427,11 @@ class VAEModel:
                 if val_loss + min_delta < state.best_val_loss:
                     state.best_val_loss = float(val_loss)
                     state.patience_counter = 0
-                    best_state = {"module": self.module.state_dict()}
+                    best_state = {
+                        "module": self.module.state_dict(),
+                        "genept_cell_projector": genept_cell_projector.state_dict() if genept_cell_projector is not None else None,
+                        "genept_gene_projector": genept_gene_projector.state_dict() if genept_gene_projector is not None else None,
+                    }
                 else:
                     state.patience_counter += 1
 
@@ -270,6 +445,10 @@ class VAEModel:
 
         if best_state is not None:
             self.module.load_state_dict(best_state["module"])
+            if genept_cell_projector is not None and best_state.get("genept_cell_projector") is not None:
+                genept_cell_projector.load_state_dict(best_state["genept_cell_projector"])
+            if genept_gene_projector is not None and best_state.get("genept_gene_projector") is not None:
+                genept_gene_projector.load_state_dict(best_state["genept_gene_projector"])
 
         self._is_trained = True
 
@@ -288,7 +467,7 @@ class VAEModel:
         self.module.eval()
         out = []
         with torch.no_grad():
-            for x, b in dl:
+            for x, b, _ in dl:
                 x = x.to(self.device)
                 b = b.to(self.device)
                 z_mu, z_logvar, _, _, _, _, _ = self.module.forward(x, b, give_mean=False)
@@ -301,4 +480,3 @@ class VAEModel:
                 out.append(z.detach().cpu().numpy())
 
         return np.concatenate(out, axis=0).astype(np.float32)
-

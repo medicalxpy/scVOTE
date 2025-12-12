@@ -210,7 +210,9 @@ class VAE(nn.Module):
 
         return z_mu, z_logvar, l_mu, l_logvar, rate, theta, pi
 
-    def loss(self, x: torch.Tensor, batch_index: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def loss(
+        self, x: torch.Tensor, batch_index: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         z_mu, z_logvar, l_mu, l_logvar, rate, theta, pi = self.forward(x, batch_index, give_mean=False)
 
         if self.config.gene_likelihood == "poisson":
@@ -231,4 +233,4 @@ class VAE(nn.Module):
         kl_l = _kl_normal_vs_normal(l_mu, l_logvar, prior_mu, prior_logvar).mean()
 
         total = recon + self.config.kl_weight * (kl_z + kl_l)
-        return total, recon, kl_z, kl_l
+        return total, recon, kl_z, kl_l, z_mu
