@@ -419,7 +419,7 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         type=str,
         required=True,
-        help="Dataset name used in training (e.g., PBMC4k_scVI_align).",
+        help="Dataset name used in training (e.g., PBMC4k_align).",
     )
     p.add_argument(
         "--n_topics",

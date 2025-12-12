@@ -10,6 +10,8 @@
 # cd /data1021/xiepengyu/scVOTE
 # export PATH="/data1021/xiepengyu/miniconda3/envs/scvote/bin:$PATH"
 # mkdir -p logs
+#
+# Embedding files are written to results/cell_embedding/<dataset>_vae.pkl
 
 
 ###############################################################################

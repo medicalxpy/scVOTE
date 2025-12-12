@@ -9,7 +9,7 @@ dataset_name=${1:-"Spleen"}
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADATA_PATH="${ROOT_DIR}/data/${dataset_name}.h5ad"
 EMB_DIR="${ROOT_DIR}/results/cell_embedding"
-EMB_PATH="${EMB_DIR}/${dataset_name}_scvi.pkl"
+EMB_PATH="${EMB_DIR}/${dataset_name}_vae.pkl"
 RESULTS_DIR="${ROOT_DIR}/results"
 
 # Training params
@@ -57,7 +57,7 @@ echo "[train.sh] EMBEDDING=${EMB_PATH}"
 echo "[train.sh] Output dir=${OUTPUT_DIR_RUN} (tag='${RUN_TAG}')"
 
 
-echo "[train.sh] Checking/Extracting embedding with scVI..."
+echo "[train.sh] Checking/Extracting embedding..."
 mkdir -p "${EMB_DIR}"
 if [[ -f "${EMB_PATH}" && "${FORCE_REEMBED:-0}" != "1" ]]; then
   echo "[train.sh] Found existing embedding: ${EMB_PATH} (skip, set FORCE_REEMBED=1 to recompute)"

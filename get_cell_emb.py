@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-scFASTopic Cell Embedding Extraction Script
+Cell Embedding Extraction Script
 
-This version computes cell embeddings with scvi-tools. It filters and
-optionally subsamples the input AnnData object, trains an SCVI model, and
-stores the latent representation as a pickle file.
+This script filters and optionally subsamples the input AnnData object,
+trains a variational model, and stores the latent representation as a
+pickle file.
 """
 
 import argparse
@@ -17,7 +17,6 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import scanpy as sc
-import scvi
 import torch
 
 torch.set_float32_matmul_precision("medium")
@@ -110,7 +109,7 @@ def _load_gene_list(gene_list_path: str, verbose: bool = False) -> Optional[Set[
     return genes
 
 
-def preprocess_for_scvi(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnData:
+def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnData:
     if config.verbose:
         logger.info("Raw data: %d cells × %d genes", adata.n_obs, adata.n_vars)
 
@@ -209,31 +208,35 @@ def preprocess_for_scvi(adata: ad.AnnData, config: EmbeddingConfig) -> ad.AnnDat
     return adata
 
 
-def train_scvi_model(adata: ad.AnnData, config: EmbeddingConfig) -> scvi.model.SCVI:
+def train_embedding_model(adata: ad.AnnData, config: EmbeddingConfig):
+    from vae import VAEModel
+
     setup_kwargs = {"layer": "counts"}
     if config.batch_key:
         setup_kwargs["batch_key"] = config.batch_key
     if config.labels_key:
         setup_kwargs["labels_key"] = config.labels_key
+    VAEModel.setup_anndata(adata, **setup_kwargs)
 
-    scvi.settings.seed = config.seed
-    scvi.model.SCVI.setup_anndata(adata, **setup_kwargs)
-
-    model = scvi.model.SCVI(
+    model = VAEModel(
         adata,
+        layer="counts",
+        batch_key=config.batch_key,
+        labels_key=config.labels_key,
         n_latent=config.n_latent,
         n_hidden=config.n_hidden,
         n_layers=config.n_layers,
         dropout_rate=config.dropout_rate,
         gene_likelihood=config.gene_likelihood,
+        seed=config.seed,
+        verbose=config.verbose,
     )
 
-    accelerator = "gpu" if torch.cuda.is_available() else "auto"
     train_kwargs = {
         "max_epochs": config.max_epochs,
         "batch_size": config.batch_size,
         "plan_kwargs": {"lr": config.learning_rate},
-        "accelerator": accelerator,
+        "accelerator": "gpu" if torch.cuda.is_available() else "auto",
         "devices": "auto",
         "check_val_every_n_epoch": config.check_val_every_n_epoch,
         "early_stopping": config.early_stopping,
@@ -244,7 +247,7 @@ def train_scvi_model(adata: ad.AnnData, config: EmbeddingConfig) -> scvi.model.S
 
     if config.verbose:
         logger.info(
-            "Training SCVI model (epochs=%d, latent=%d, batch_size=%d)...",
+            "Training embedding model (epochs=%d, latent=%d, batch_size=%d)...",
             config.max_epochs,
             config.n_latent,
             config.batch_size,
@@ -254,14 +257,20 @@ def train_scvi_model(adata: ad.AnnData, config: EmbeddingConfig) -> scvi.model.S
     return model
 
 
-def extract_scvi_embeddings(adata: ad.AnnData, config: EmbeddingConfig) -> np.ndarray:
-    model = train_scvi_model(adata, config)
-    latent = model.get_latent_representation()
+def extract_embeddings(adata: ad.AnnData, config: EmbeddingConfig) -> np.ndarray:
+    model = train_embedding_model(adata, config)
+    latent = model.get_latent_representation(give_mean=True, batch_size=config.batch_size)
+    return latent.astype(np.float32)
+
+
+def extract_embeddings_sampled(adata: ad.AnnData, config: EmbeddingConfig) -> np.ndarray:
+    model = train_embedding_model(adata, config)
+    latent = model.get_latent_representation(give_mean=False, batch_size=config.batch_size)
     return latent.astype(np.float32)
 
 
 def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str:
-    filename = f"{config.dataset_name}_scvi.pkl"
+    filename = f"{config.dataset_name}_vae.pkl"
     path = Path(config.output_dir) / filename
     with path.open("wb") as f:
         import pickle
@@ -274,7 +283,7 @@ def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="scFASTopic cell embeddings via scVI")
+    parser = argparse.ArgumentParser(description="Cell embeddings via variational model")
     parser.add_argument("--input_data", required=True, help="Input .h5ad file path")
     parser.add_argument("--dataset_name", default="dataset", help="Dataset name")
     parser.add_argument("--output_dir", default="results/cell_embedding", help="Output directory")
@@ -293,17 +302,22 @@ def main() -> None:
     )
     parser.add_argument("--batch_key", help="Batch column in AnnData")
     parser.add_argument("--labels_key", help="Labels column in AnnData")
-    parser.add_argument("--n_latent", type=int, default=30, help="Latent dimension for scVI")
-    parser.add_argument("--n_hidden", type=int, default=128, help="Hidden layer size for scVI")
-    parser.add_argument("--n_layers", type=int, default=2, help="Number of layers for scVI")
-    parser.add_argument("--dropout_rate", type=float, default=0.1, help="Dropout for scVI")
-    parser.add_argument("--gene_likelihood", default="zinb", help="Gene likelihood for scVI")
+    parser.add_argument("--n_latent", type=int, default=30, help="Latent dimension")
+    parser.add_argument("--n_hidden", type=int, default=128, help="Hidden layer size")
+    parser.add_argument("--n_layers", type=int, default=2, help="Number of layers")
+    parser.add_argument("--dropout_rate", type=float, default=0.1, help="Dropout rate")
+    parser.add_argument("--gene_likelihood", default="zinb", help="Gene likelihood (zinb/nb/poisson)")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Training learning rate")
     parser.add_argument("--max_epochs", type=int, default=1000, help="Max training epochs")
     parser.add_argument("--batch_size", type=int, default=2048, help="Training batch size")
     parser.add_argument("--early_stopping", action="store_true", help="Enable early stopping")
     parser.add_argument("--early_stopping_patience", type=int, default=20, help="Early stopping patience")
     parser.add_argument("--check_val_every_n_epoch", type=int, default=1, help="Validation check frequency")
+    parser.add_argument(
+        "--sample_latent",
+        action="store_true",
+        help="Sample latent variables instead of using posterior means.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
@@ -339,9 +353,12 @@ def main() -> None:
         logger.info("Loading data: %s", config.input_data)
     adata = sc.read_h5ad(config.input_data)
 
-    adata_preprocessed = preprocess_for_scvi(adata, config)
+    adata_preprocessed = preprocess_for_embedding(adata, config)
 
-    cell_embeddings = extract_scvi_embeddings(adata_preprocessed, config)
+    if args.sample_latent:
+        cell_embeddings = extract_embeddings_sampled(adata_preprocessed, config)
+    else:
+        cell_embeddings = extract_embeddings(adata_preprocessed, config)
 
     saved_file = save_embeddings(cell_embeddings, config)
 
@@ -349,7 +366,7 @@ def main() -> None:
     logger.info("Dataset: %s", config.dataset_name)
     logger.info("Cells: %d", cell_embeddings.shape[0])
     logger.info("Embedding dim: %d", cell_embeddings.shape[1])
-    logger.info("Method: scvi")
+    logger.info("Method: vae")
     logger.info("Saved to: %s", saved_file)
 
 
