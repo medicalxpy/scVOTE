@@ -86,11 +86,11 @@ else
     --verbose
 fi
   
-# echo "[train.sh] Training WITHOUT structural alignment (baseline)"
+# echo "[train.sh] Training WITHOUT alignment (baseline)"
 # python train_fastopic.py \
 #   --embedding_file "${EMB_PATH}" \
 #   --adata_path "${ADATA_PATH}" \
-#   --dataset "${dataset_name}_scVI" \
+#   --dataset "${dataset_name}_vae" \
 #   --n_topics ${N_TOPICS} \
 #   --epochs ${EPOCHS} \
 #   --lr ${LR} \
@@ -121,10 +121,10 @@ if [[ "${GENEPT_FILTER}" != "1" ]]; then
   TRAIN_GENEPT_FLAG="--no_genept_filter"
 fi
 
-RUN_DATASET_SUFFIX="scVI_align"
+RUN_DATASET_SUFFIX="vae_align"
 if [[ "${STRUCTURE_ALIGN}" == "0" && "${CONTRASTIVE_ALIGN}" == "0" ]]; then
   echo "[train.sh] Training WITHOUT alignment (baseline)"
-  RUN_DATASET_SUFFIX="scVI"
+  RUN_DATASET_SUFFIX="vae"
 else
   echo "[train.sh] Training WITH alignment (structure=${STRUCTURE_ALIGN}, contrastive=${CONTRASTIVE_ALIGN})"
 fi
