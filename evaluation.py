@@ -551,6 +551,14 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
     if not cell_topic_path.exists():
         raise FileNotFoundError(f"Cell-topic file not found: {cell_topic_path}")
     X = _load_cell_topic_matrix(cell_topic_path)
+    X = np.asarray(X, dtype=np.float32)
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    row_sum = X.sum(axis=1, keepdims=True)
+    bad = row_sum <= 0
+    if np.any(bad):
+        X[bad[:, 0]] = 1.0 / max(1, X.shape[1])
+        row_sum = X.sum(axis=1, keepdims=True)
+    X = X / np.maximum(row_sum, 1e-12)
 
     adata_orig = sc.read_h5ad(cfg.adata_path)
 

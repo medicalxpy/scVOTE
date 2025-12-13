@@ -57,6 +57,18 @@ class fastopic(nn.Module):
         self._gene_alignment_mask = None
         self._align_ref = None
 
+    @staticmethod
+    def _sanitize_simplex_rows(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        x = torch.clamp(x, min=0.0)
+        row_sum = x.sum(dim=1, keepdim=True)
+        bad = (row_sum <= eps).squeeze(1)
+        if bad.any():
+            x[bad, :] = 1.0 / max(1, x.shape[1])
+            row_sum = x.sum(dim=1, keepdim=True)
+        x = x / torch.clamp(row_sum, min=eps)
+        return x
+
     def init(self,
              vocab_size: int,
              embed_size: int,
@@ -161,8 +173,9 @@ class fastopic(nn.Module):
             exp_dist = torch.exp(-dist / self.theta_temp)
             exp_train_dist = torch.exp(-train_dist / self.theta_temp)
 
-            theta = exp_dist / (exp_train_dist.sum(0))
-            theta = theta / theta.sum(1, keepdim=True)
+            denom = exp_train_dist.sum(0) + self.epsilon
+            theta = exp_dist / denom
+            theta = self._sanitize_simplex_rows(theta, eps=self.epsilon)
 
             return theta
 
@@ -192,6 +205,8 @@ class fastopic(nn.Module):
         
         theta = transp_DT * transp_DT.shape[0]
         beta = transp_TW * transp_TW.shape[0]
+        theta = self._sanitize_simplex_rows(theta, eps=self.epsilon)
+        beta = self._sanitize_simplex_rows(beta, eps=self.epsilon)
 
         
         recon = torch.matmul(theta, beta)
