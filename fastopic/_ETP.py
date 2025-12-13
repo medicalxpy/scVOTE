@@ -26,7 +26,7 @@ class ETP(nn.Module):
         if init_b_dist is not None:
             self.b_dist = init_b_dist
 
-    def forward(self, x, y):
+    def forward(self, x, y, return_cost_mean: bool = False):
         # Sinkhorn's algorithm in log-space
         M = pairwise_euclidean_distance(x, y)
         device = M.device
@@ -85,6 +85,9 @@ class ETP(nn.Module):
 
         # Compute transport cost: <P, M>
         loss_ETP = torch.sum(transp * M)
+
+        if return_cost_mean:
+            return loss_ETP, transp, M.mean()
 
         return loss_ETP, transp
 

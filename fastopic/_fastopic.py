@@ -167,14 +167,18 @@ class fastopic(nn.Module):
             return theta
 
     def forward(self, train_bow, doc_embeddings):
-        loss_DT, transp_DT = self.DT_ETP(doc_embeddings, self.topic_embeddings)
-        loss_TW, transp_TW = self.TW_ETP(self.topic_embeddings, self.word_embeddings)
+        loss_DT, transp_DT, cost_DT_mean = self.DT_ETP(
+            doc_embeddings, self.topic_embeddings, return_cost_mean=True
+        )
+        loss_TW, transp_TW, cost_TW_mean = self.TW_ETP(
+            self.topic_embeddings, self.word_embeddings, return_cost_mean=True
+        )
 
-        # Weighted ETP loss components
-        num_cells = doc_embeddings.shape[0]
-        dt_weight = (self.num_topics / num_cells) ** 0.5
-        tw_weight = (self.vocab_size / self.num_topics) ** 0.5
-        loss_ETP = dt_weight * loss_DT + tw_weight * loss_TW
+        # Auto scale balancing: normalize by distance scales so DT/TW losses are comparable.
+        # Use stop-gradient on the scales to avoid introducing incentives to inflate distances.
+        dt_scale = torch.clamp(cost_DT_mean.detach(), min=self.epsilon)
+        tw_scale = torch.clamp(cost_TW_mean.detach(), min=self.epsilon)
+        loss_ETP = (loss_DT / dt_scale) + (loss_TW / tw_scale)
         
         # # Auto scale balancing — compute distance matrices to normalize losses
         # from ._model_utils import pairwise_euclidean_distance
