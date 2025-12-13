@@ -36,6 +36,7 @@ class FASTopic:
         align_max_kernel_genes: int = 4096,
         # Legacy GenePT contrastive alignment
         genept_loss_weight: float = 0.0,
+        topic_diversity_weight: float = 0.0,
         low_memory: bool = False,
         low_memory_batch_size: int = None,
         verbose: bool = False,
@@ -70,6 +71,7 @@ class FASTopic:
             DT_alpha,
             TW_alpha,
             genept_loss_weight=genept_loss_weight,
+            topic_diversity_weight=topic_diversity_weight,
             align_enable=align_enable,
             align_alpha=align_alpha,
             align_beta=align_beta,

@@ -113,6 +113,8 @@ class FastopicConfig:
     align_max_kernel_genes: int = 4096
     # Legacy GenePT contrastive loss weight
     genept_loss_weight: float = 0.0
+    # Topic diversity regularizer (0 disables)
+    topic_diversity_weight: float = 0.0
     # HVG selection for single training (0 disables)
     n_top_genes: int = 0
     # Optional gene list filter for single training
@@ -197,6 +199,13 @@ def parse_args():
         action='store_true',
         help='Enable GenePT contrastive alignment loss (uses a default weight if not set)',
     )
+
+    parser.add_argument(
+        '--topic_diversity_weight',
+        type=float,
+        default=0.0,
+        help='Weight for topic diversity regularizer (0 to disable)',
+    )
     
     return parser.parse_args()
 
@@ -235,6 +244,7 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         align_cka_sample_n=args.align_cka_sample_n,
         align_max_kernel_genes=args.align_max_kernel_genes,
         genept_loss_weight=genept_loss_weight,
+        topic_diversity_weight=args.topic_diversity_weight,
         n_top_genes=args.n_top_genes,
         gene_list_path=args.gene_list_path,
     )
@@ -523,6 +533,7 @@ def train_fastopic_model(
         align_cka_sample_n=config.align_cka_sample_n,
         align_max_kernel_genes=config.align_max_kernel_genes,
         genept_loss_weight=config.genept_loss_weight,
+        topic_diversity_weight=config.topic_diversity_weight,
         verbose=verbose,
         log_interval=10,
         low_memory=True,

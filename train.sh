@@ -36,6 +36,7 @@ CKA_SAMPLE_N=${CKA_SAMPLE_N:-2048}
 STRUCTURE_ALIGN=${STRUCTURE_ALIGN:-1}      # 1: enable structural (Laplacian+CKA) alignment, 0: disable
 CONTRASTIVE_ALIGN=${CONTRASTIVE_ALIGN:-0}  # 1: enable GenePT contrastive alignment, 0: disable
 GENEPT_LOSS_WEIGHT=${GENEPT_LOSS_WEIGHT:-1e-3}
+TOPIC_DIVERSITY_WEIGHT=${TOPIC_DIVERSITY_WEIGHT:-0}
 
 # Workaround for numba caching issues in some environments
 export NUMBA_CACHE_DIR="${ROOT_DIR}/.numba_cache"
@@ -148,6 +149,7 @@ python "${ROOT_DIR}/train_fastopic.py" \
   ${STRUCTURE_FLAG} \
   ${CONTRASTIVE_FLAG} \
   ${GENEPT_WEIGHT_ARG} \
+  --topic_diversity_weight ${TOPIC_DIVERSITY_WEIGHT} \
   --gene_list_path "${GENE_LIST_PATH}" \
   ${TRAIN_GENEPT_FLAG} \
   --output_dir "${OUTPUT_DIR_RUN}"

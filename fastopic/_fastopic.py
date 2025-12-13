@@ -22,6 +22,7 @@ class fastopic(nn.Module):
                  genept_proj_hidden: int = 1024,
                  genept_temperature: float = 0.1,
                  genept_loss_weight: float = 0.0,
+                 topic_diversity_weight: float = 0.0,
                  # Structural alignment (Laplacian + CKA)
                  align_enable: bool = True,
                  align_alpha: float = 1e-3,
@@ -41,6 +42,7 @@ class fastopic(nn.Module):
         self.genept_proj_hidden = genept_proj_hidden
         self.genept_temperature = genept_temperature
         self.genept_loss_weight = genept_loss_weight
+        self.topic_diversity_weight = float(topic_diversity_weight)
         # Structural alignment config
         self.align_enable = align_enable
         self.align_alpha = align_alpha
@@ -68,6 +70,16 @@ class fastopic(nn.Module):
             row_sum = x.sum(dim=1, keepdim=True)
         x = x / torch.clamp(row_sum, min=eps)
         return x
+
+    def _topic_diversity_loss(self) -> torch.Tensor:
+        if self.num_topics <= 1:
+            return torch.tensor(0.0, device=self.topic_embeddings.device)
+        t = F.normalize(self.topic_embeddings, dim=1, eps=self.epsilon)
+        gram = torch.matmul(t, t.t())
+        eye = torch.eye(self.num_topics, device=gram.device, dtype=gram.dtype)
+        off = gram - eye
+        denom = float(self.num_topics * (self.num_topics - 1))
+        return (off.pow(2).sum() / denom)
 
     def init(self,
              vocab_size: int,
@@ -211,7 +223,7 @@ class fastopic(nn.Module):
         
         recon = torch.matmul(theta, beta)
         loss_DSR = -(train_bow * (recon + self.epsilon).log()).sum(axis=1).mean()
-        
+
         # Add structural alignment losses (Laplacian + CKA)
         loss_lap, loss_cka = self._compute_struct_alignment_losses()
 
@@ -224,12 +236,18 @@ class fastopic(nn.Module):
                 0.0, device=self.word_embeddings.device
             )
 
+        if self.topic_diversity_weight is not None and self.topic_diversity_weight > 0:
+            loss_diversity = self._topic_diversity_loss()
+        else:
+            loss_diversity = torch.tensor(0.0, device=self.word_embeddings.device)
+
         loss = (
             loss_DSR
             + 1e-2 * loss_ETP
             + self.align_alpha * loss_lap
             + self.align_beta * loss_cka
             + self.genept_loss_weight * loss_genept_alignment
+            + self.topic_diversity_weight * loss_diversity
         )
 
         rst_dict = {
@@ -241,6 +259,7 @@ class fastopic(nn.Module):
             'loss_genept_alignment': loss_genept_alignment,
             'loss_lap': loss_lap,
             'loss_cka': loss_cka,
+            'loss_diversity': loss_diversity,
         }
 
         return rst_dict
