@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from scipy.stats import fisher_exact
+from scipy.stats import hypergeom
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 
@@ -55,6 +56,196 @@ DEFAULT_LABEL_CANDIDATES: List[str] = [
 
 ROOT_DIR = Path(__file__).resolve().parent
 GENESET_DIR = ROOT_DIR / "data" / "gene_sets"
+EVAL_CACHE_DIR = ROOT_DIR / "results" / "eval_cache"
+
+
+def _is_gobp(pathway_name: str) -> bool:
+    s = str(pathway_name).upper()
+    return (
+        s.startswith("GOBP_")
+        or s.startswith("GO_BP_")
+        or s.startswith("GO_BIOLOGICAL_PROCESS")
+        or "BIOLOGICAL_PROCESS" in s
+    )
+
+
+def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
+    pvals = np.asarray(pvals, dtype=float)
+    n = int(pvals.size)
+    order = np.argsort(pvals)
+    ranked = pvals[order]
+    q = ranked * n / (np.arange(1, n + 1))
+    q = np.minimum.accumulate(q[::-1])[::-1]
+    q = np.clip(q, 0.0, 1.0)
+    out = np.empty_like(q)
+    out[order] = q
+    return out
+
+
+def _find_pathway_gene_csv() -> Optional[Path]:
+    env = os.environ.get("MSIGDB_PATHWAY_GENE_CSV")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    candidates = [
+        ROOT_DIR / "C2_C5_pathway_gene.csv",
+        ROOT_DIR / "evaluation" / "MsigDB" / "C2_C5_pathway_gene.csv",
+        ROOT_DIR / "data" / "gene_sets" / "C2_C5_pathway_gene.csv",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _load_gobp_terms_from_pathway_gene_csv(pathway_gene_csv: Path) -> Dict[str, set]:
+    df = pd.read_csv(pathway_gene_csv, usecols=["pathway_name", "gene_symbol"])
+    df = df.dropna().drop_duplicates()
+    df = df[df["pathway_name"].map(_is_gobp)]
+    term_to_genes = (
+        df.groupby("pathway_name")["gene_symbol"]
+        .apply(lambda x: set(x.astype(str).str.upper()))
+        .to_dict()
+    )
+    return term_to_genes
+
+
+def _build_term_gene_sparse(
+    term_to_genes: Dict[str, set],
+    *,
+    min_term_size: int = 10,
+    max_term_size: int = 500,
+) -> Tuple["csr_matrix", np.ndarray, Dict[str, int]]:
+    from scipy.sparse import csr_matrix  # local import to keep scanpy import order stable
+
+    universe: set = set()
+    for genes in term_to_genes.values():
+        universe |= {str(g).upper() for g in genes}
+    universe_list = sorted(universe)
+    gene_to_col = {g: i for i, g in enumerate(universe_list)}
+
+    rows: List[int] = []
+    cols: List[int] = []
+    term_sizes: List[int] = []
+    for term, genes in term_to_genes.items():
+        genes_in = [g for g in genes if str(g).upper() in gene_to_col]
+        k = len(genes_in)
+        if k < min_term_size or k > max_term_size:
+            continue
+        t = len(term_sizes)
+        term_sizes.append(k)
+        for g in genes_in:
+            cols.append(gene_to_col[str(g).upper()])
+            rows.append(t)
+
+    A = csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(term_sizes), len(universe_list)))
+    return A, np.asarray(term_sizes, dtype=int), gene_to_col
+
+
+def _load_or_build_gobp_sparse(
+    base_dataset: str,
+    *,
+    prefer_pathway_gene_csv: bool = True,
+) -> Tuple["csr_matrix", np.ndarray, Dict[str, int], str]:
+    EVAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    source = "genesets"
+    term_to_genes: Dict[str, set]
+
+    pathway_gene_csv = _find_pathway_gene_csv() if prefer_pathway_gene_csv else None
+    if pathway_gene_csv is not None:
+        source = "msigdb_csv"
+        cache_npz = EVAL_CACHE_DIR / "gobp_msigdb.npz"
+        cache_sizes = EVAL_CACHE_DIR / "gobp_msigdb_term_sizes.npy"
+        cache_gene2col = EVAL_CACHE_DIR / "gobp_msigdb_gene_to_col.json"
+
+        if cache_npz.exists() and cache_sizes.exists() and cache_gene2col.exists():
+            from scipy.sparse import load_npz
+
+            A = load_npz(cache_npz)
+            term_sizes = np.load(cache_sizes)
+            with open(cache_gene2col, "r", encoding="utf-8") as f:
+                gene_to_col = json.load(f)
+            gene_to_col = {str(k): int(v) for k, v in gene_to_col.items()}
+            return A, term_sizes, gene_to_col, source
+
+        term_to_genes = _load_gobp_terms_from_pathway_gene_csv(pathway_gene_csv)
+        A, term_sizes, gene_to_col = _build_term_gene_sparse(term_to_genes)
+
+        from scipy.sparse import save_npz
+
+        save_npz(cache_npz, A)
+        np.save(cache_sizes, term_sizes)
+        with open(cache_gene2col, "w", encoding="utf-8") as f:
+            json.dump(gene_to_col, f, ensure_ascii=False)
+        return A, term_sizes, gene_to_col, source
+
+    term_to_genes = _load_go_bp_genesets(base_dataset)
+    A, term_sizes, gene_to_col = _build_term_gene_sparse(term_to_genes)
+    return A, term_sizes, gene_to_col, source
+
+
+def _compute_ora_spp_go_bp_bh(
+    gene_topic_df: pd.DataFrame,
+    *,
+    base_dataset: str,
+    top_n: int = 10,
+    fdr_cutoff: float = 0.05,
+) -> Tuple[float, float, str]:
+    A, term_sizes, gene_to_col, source = _load_or_build_gobp_sparse(base_dataset)
+    M = int(A.shape[1])
+
+    df = gene_topic_df.copy()
+    df.index = df.index.map(lambda x: str(x).upper())
+    df = df.groupby(df.index).mean()
+
+    gene_names = df.index.to_numpy()
+    gene_topic = df.to_numpy().T  # topics × genes
+    n_topics, n_genes = gene_topic.shape
+
+    n_sig_topics = 0
+    topic_scores: List[float] = []
+
+    for t in range(n_topics):
+        weights = gene_topic[t]
+        if top_n >= n_genes:
+            idx = np.argsort(weights)[::-1]
+        else:
+            idx = np.argpartition(weights, -top_n)[-top_n:]
+            idx = idx[np.argsort(weights[idx])[::-1]]
+
+        top_genes = [str(gene_names[i]).upper() for i in idx if str(gene_names[i]).upper() in gene_to_col]
+        n = len(top_genes)
+        if n == 0:
+            topic_scores.append(np.nan)
+            continue
+
+        cols = [gene_to_col[g] for g in top_genes]
+        k_vec = np.asarray(A[:, cols].sum(axis=1)).ravel().astype(int)
+
+        pos = k_vec > 0
+        if not np.any(pos):
+            topic_scores.append(np.nan)
+            continue
+
+        K = term_sizes[pos]
+        k = k_vec[pos]
+        pvals = hypergeom.sf(k - 1, M, K, n)
+        fdrs = _bh_fdr(pvals)
+
+        sig = fdrs < fdr_cutoff
+        if sig.any():
+            n_sig_topics += 1
+            score = float(np.mean(-np.log10(fdrs[sig] + 1e-300)))
+            topic_scores.append(score)
+        else:
+            topic_scores.append(np.nan)
+
+    valid = [s for s in topic_scores if not np.isnan(s)]
+    ora = float(np.mean(valid)) if valid else float("nan")
+    spp_prop = float(n_sig_topics / float(max(1, n_topics)))
+    return ora, spp_prop, source
 
 
 @dataclass
@@ -619,6 +810,24 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
         )
 
     if gene_topic_df is not None:
+        # ORA + SPP (GO:BP; BH-FDR; top10) from MsigDB pathway-gene CSV if available,
+        # otherwise fall back to dataset GO_BP genesets.
+        try:
+            ora_bh, spp_bh, src = _compute_ora_spp_go_bp_bh(
+                gene_topic_df,
+                base_dataset=base_dataset,
+                top_n=10,
+                fdr_cutoff=0.05,
+            )
+            metrics["ORA_GO_BP_BH_top10"] = None if np.isnan(ora_bh) else float(ora_bh)
+            metrics["SPP_GO_BP_BH_prop_top10"] = float(spp_bh)
+            metrics["ORA_GO_BP_BH_source"] = str(src)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[evaluation.py] ORA+SPP (GO_BP, BH) unavailable: {exc}")
+            metrics.setdefault("ORA_GO_BP_BH_top10", None)
+            metrics.setdefault("SPP_GO_BP_BH_prop_top10", None)
+            metrics.setdefault("ORA_GO_BP_BH_source", "")
+
         # TC / TD metrics based on genesets (using GO_BP as pathway-style sets).
         try:
             go_genesets_tc = _load_go_bp_genesets(base_dataset)
@@ -738,6 +947,18 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
         )
     else:
         print("- ORA (GO_BP): N/A")
+
+    ora_bh = metrics.get("ORA_GO_BP_BH_top10")
+    spp_bh = metrics.get("SPP_GO_BP_BH_prop_top10")
+    if ora_bh is not None and spp_bh is not None:
+        src = metrics.get("ORA_GO_BP_BH_source") or ""
+        src_str = f" (source={src})" if src else ""
+        print(
+            "- ORA+SPP (GO_BP, BH top10): "
+            f"ORA={ora_bh:.4f}, SPP_Prop={spp_bh:.3f}{src_str}"
+        )
+    else:
+        print("- ORA+SPP (GO_BP, BH top10): N/A")
 
     spp_prop = metrics.get("ORA_markers_SPP_prop")
     spp_mean = metrics.get("ORA_markers_SPP_mean")

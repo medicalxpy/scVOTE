@@ -12,6 +12,11 @@
 # mkdir -p logs
 #
 # Embedding files are written to results/cell_embedding/<dataset>_vae.pkl
+#
+# Evaluation now also computes ORA+SPP (GO_BP, BH top10). If you want it to use a
+# MsigDB pathway-gene mapping CSV, set:
+#   export MSIGDB_PATHWAY_GENE_CSV=/path/to/C2_C5_pathway_gene.csv
+# Otherwise it falls back to data/gene_sets/<dataset>_GO_BP_genesets.csv.
 
 
 ###############################################################################
