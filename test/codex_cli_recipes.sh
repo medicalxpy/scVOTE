@@ -64,6 +64,13 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 # nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 bash train.sh PBMC4k' \
 #   > logs/train_PBMC4k_contrastive.log 2>&1 &
 
+###############################################################################
+# 2b. Grid training (Spleen/lung/PBMC4k/kidney × structure/contrastive × K=20/50/100)
+###############################################################################
+
+# One-shot launcher (starts jobs via nohup):
+# nohup bash -c 'bash test/train_grid.sh' > logs/train_grid.log 2>&1 &
+
 
 ###############################################################################
 # 3. Incremental alignment + topic filter（老 pipeline）
