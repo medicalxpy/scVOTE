@@ -89,9 +89,10 @@ def _find_pathway_gene_csv() -> Optional[Path]:
         if p.exists():
             return p
     candidates = [
+        ROOT_DIR / "C2_C5_pathway_gene.csv.gz",
         ROOT_DIR / "C2_C5_pathway_gene.csv",
+        ROOT_DIR / "evaluation" / "MsigDB" / "C2_C5_pathway_gene.csv.gz",
         ROOT_DIR / "evaluation" / "MsigDB" / "C2_C5_pathway_gene.csv",
-        ROOT_DIR / "data" / "gene_sets" / "C2_C5_pathway_gene.csv",
     ]
     for p in candidates:
         if p.exists():

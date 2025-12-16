@@ -24,9 +24,10 @@ def _default_pathway_gene_csv() -> Path | None:
             return p
 
     candidates = [
+        PROJECT_ROOT / "C2_C5_pathway_gene.csv.gz",
         PROJECT_ROOT / "C2_C5_pathway_gene.csv",
+        PROJECT_ROOT / "evaluation" / "MsigDB" / "C2_C5_pathway_gene.csv.gz",
         PROJECT_ROOT / "evaluation" / "MsigDB" / "C2_C5_pathway_gene.csv",
-        PROJECT_ROOT / "data" / "gene_sets" / "C2_C5_pathway_gene.csv",
     ]
     for p in candidates:
         if p.exists():

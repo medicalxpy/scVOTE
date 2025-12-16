@@ -6,6 +6,7 @@ AGENTS.md
 Geneformer
 data
 GenePT_emebdding_v2
+C2_C5_pathway_gene.csv
 __pycache__/
 */__pycache__/
 **/__pycache__/
