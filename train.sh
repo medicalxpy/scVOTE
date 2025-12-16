@@ -44,13 +44,47 @@ export NUMBA_DISABLE_CACHING=1
 mkdir -p "$NUMBA_CACHE_DIR"
 
 RUN_TAG=${RUN_TAG:-}
+# Build alignment flags
+STRUCTURE_FLAG=""
+if [[ "${STRUCTURE_ALIGN}" == "1" ]]; then
+  STRUCTURE_FLAG="--structure"
+else
+  STRUCTURE_FLAG="--no_align"
+fi
+
+CONTRASTIVE_FLAG=""
+GENEPT_WEIGHT_ARG="--genept_loss_weight 0"
+if [[ "${CONTRASTIVE_ALIGN}" == "1" ]]; then
+  CONTRASTIVE_FLAG="--contrastive"
+  GENEPT_WEIGHT_ARG="--genept_loss_weight ${GENEPT_LOSS_WEIGHT}"
+fi
+
+TRAIN_GENEPT_FLAG=""
+if [[ "${GENEPT_FILTER}" != "1" ]]; then
+  TRAIN_GENEPT_FLAG="--no_genept_filter"
+fi
+
+# Unified run directory under results/
+# - Default: results/<dataset>_{structure|contrastive|baseline}_K<N_TOPICS>
+# - Compatibility: if RUN_TAG is set, use results/tuning/<RUN_TAG>
+RUN_NAME=""
+if [[ "${STRUCTURE_ALIGN}" == "1" && "${CONTRASTIVE_ALIGN}" == "0" ]]; then
+  RUN_NAME="${dataset_name}_structure_K${N_TOPICS}"
+elif [[ "${STRUCTURE_ALIGN}" == "0" && "${CONTRASTIVE_ALIGN}" == "1" ]]; then
+  RUN_NAME="${dataset_name}_contrastive_K${N_TOPICS}"
+elif [[ "${STRUCTURE_ALIGN}" == "0" && "${CONTRASTIVE_ALIGN}" == "0" ]]; then
+  RUN_NAME="${dataset_name}_baseline_K${N_TOPICS}"
+else
+  # If both are enabled, keep the naming explicit.
+  RUN_NAME="${dataset_name}_structure_contrastive_K${N_TOPICS}"
+fi
+
 if [[ -n "${RUN_TAG}" ]]; then
   OUTPUT_DIR_RUN="${RESULTS_DIR}/tuning/${RUN_TAG}"
-  EVAL_OUT_DIR="${OUTPUT_DIR_RUN}/evaluation"
 else
-  OUTPUT_DIR_RUN="${RESULTS_DIR}"
-  EVAL_OUT_DIR="${RESULTS_DIR}/evaluation"
+  OUTPUT_DIR_RUN="${RESULTS_DIR}/${RUN_NAME}"
 fi
+EVAL_OUT_DIR="${OUTPUT_DIR_RUN}/evaluation"
 
 echo "[train.sh] Dataset=${dataset_name}"
 echo "[train.sh] ADATA=${ADATA_PATH}"
@@ -101,26 +135,6 @@ fi
 #   --n_top_genes ${N_TOP_GENES_TRAIN} \
 #   --no_align \
 #   --genept_loss_weight 1e-3
-
-# Build alignment flags
-STRUCTURE_FLAG=""
-if [[ "${STRUCTURE_ALIGN}" == "1" ]]; then
-  STRUCTURE_FLAG="--structure"
-else
-  STRUCTURE_FLAG="--no_align"
-fi
-
-CONTRASTIVE_FLAG=""
-GENEPT_WEIGHT_ARG="--genept_loss_weight 0"
-if [[ "${CONTRASTIVE_ALIGN}" == "1" ]]; then
-  CONTRASTIVE_FLAG="--contrastive"
-  GENEPT_WEIGHT_ARG="--genept_loss_weight ${GENEPT_LOSS_WEIGHT}"
-fi
-
-TRAIN_GENEPT_FLAG=""
-if [[ "${GENEPT_FILTER}" != "1" ]]; then
-  TRAIN_GENEPT_FLAG="--no_genept_filter"
-fi
 
 RUN_DATASET_SUFFIX="vae_align"
 if [[ "${STRUCTURE_ALIGN}" == "0" && "${CONTRASTIVE_ALIGN}" == "0" ]]; then

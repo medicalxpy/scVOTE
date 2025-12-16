@@ -35,13 +35,14 @@
 # 2. Single-dataset training (structure alignment; 50 topics)
 ###############################################################################
 
-# 将结果写到 results/tuning/<RUN_TAG>：
-# - 设置环境变量 RUN_TAG 即可（train.sh 会自动将 output_dir 指向 results/tuning/RUN_TAG）
-# - 例：PBMC4k + structure + K=50，输出到 results/tuning/PBMC4k_structure_K50
+# 训练结果默认写到 results/<dataset>_{structure|contrastive|baseline}_K<N_TOPICS>/：
+# - 例：PBMC4k + structure + K=50 → results/PBMC4k_structure_K50/
+# - 例：PBMC4k + contrastive + K=50 → results/PBMC4k_contrastive_K50/
 # - 可选：TOPIC_DIVERSITY_WEIGHT=1e-3（topic diversity 正则，0 表示关闭）
+# - 兼容：如需写到 results/tuning/<RUN_TAG>/，设置 RUN_TAG 即可
 #
-nohup bash -c 'RUN_TAG=PBMC4k_contrastive_K50 N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY_WEIGHT=1e-3 bash train.sh PBMC4k' \
-  > logs/train_PBMC4k_structure_K50.log 2>&1 &
+nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY_WEIGHT=1e-3 bash train.sh PBMC4k' \
+  > logs/train_PBMC4k_contrastive_K50.log 2>&1 &
 #
 # 对应训练产物的 dataset 名一般为：
 # - 有 alignment：<dataset>_vae_align（例如 PBMC4k_vae_align）
