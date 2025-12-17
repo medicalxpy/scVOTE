@@ -191,6 +191,10 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 # （2b）对 results/ 下已有的所有单次训练结果批量跑 evaluation，并汇总成一个 CSV
 # nohup bash -c 'cd /data1021/xiepengyu/scVOTE && python test/eval_results_to_csv.py --results_root results --out_csv results/evaluation/all_runs_metrics.csv' \
 #   > logs/eval_all_results.log 2>&1 &
+#
+# 等价（推荐用脚本封装参数）：
+# nohup bash -c 'cd /data1021/xiepengyu/scVOTE && bash test/eval_all_results.sh results results/evaluation/all_runs_metrics.csv' \
+#   > logs/eval_all_results.log 2>&1 &
 
 # （3）只跑可视化脚本
 # python visualization.py \
