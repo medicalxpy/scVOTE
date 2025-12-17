@@ -73,6 +73,12 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 #
 # Only compute embeddings (no training):
 # nohup bash -c 'EMBED_ONLY=1 bash test/train_grid.sh' > logs/embed_grid.log 2>&1 &
+#
+# Only launch missing/incomplete runs (recommended for retries after OOM):
+# nohup bash -c 'ONLY_MISSING=1 bash test/train_grid.sh' > logs/train_grid_missing.log 2>&1 &
+#
+# Example: only rerun missing lung+Spleen runs:
+# nohup bash -c 'ONLY_MISSING=1 DATASETS="lung Spleen" bash test/train_grid.sh' > logs/train_grid_lung_spleen_missing.log 2>&1 &
 
 
 ###############################################################################

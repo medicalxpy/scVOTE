@@ -22,6 +22,7 @@ set -euo pipefail
 #   METHODS="structure contrastive"
 #   DRY_RUN=1                 # only print commands
 #   EMBED_ONLY=1              # only compute embeddings (no training)
+#   ONLY_MISSING=1            # only launch runs with missing/incomplete results
 #   CUDA_VISIBLE_DEVICES=0    # pin all jobs to a GPU (or set GPU_IDS below)
 #   GPU_IDS="0 1 2 3"         # round-robin GPUs when CUDA_VISIBLE_DEVICES is not set
 #   MAX_PARALLEL=4            # max concurrent training jobs (default: number of GPUs)
@@ -44,6 +45,7 @@ IFS=' ' read -r -a GPU_IDS <<< "${GPU_IDS:-${GPU_IDS_DEFAULT[*]}}"
 
 DRY_RUN="${DRY_RUN:-0}"
 EMBED_ONLY="${EMBED_ONLY:-0}"
+ONLY_MISSING="${ONLY_MISSING:-0}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 EMB_DIR="${ROOT_DIR}/results/cell_embedding"
@@ -188,6 +190,23 @@ _launch_controlled() {
   local method="$2"
   local k="$3"
 
+  local run_dir="results/${dataset}_${method}_K${k}"
+  if [[ "${ONLY_MISSING}" == "1" ]]; then
+    if [[ -d "${run_dir}" ]]; then
+      local cell_topic_cnt
+      local topic_gene_cnt
+      local topic_emb_cnt
+      cell_topic_cnt="$(find "${run_dir}" -maxdepth 3 -type f -name '*cell_topic_matrix*.pkl' 2>/dev/null | wc -l | tr -d ' ')"
+      topic_gene_cnt="$(find "${run_dir}" -maxdepth 3 -type f -name '*topic_gene_matrix*.pkl' 2>/dev/null | wc -l | tr -d ' ')"
+      topic_emb_cnt="$(find "${run_dir}" -maxdepth 3 -type f -name '*topic_embeddings*.pkl' 2>/dev/null | wc -l | tr -d ' ')"
+      if [[ "${cell_topic_cnt}" -gt 0 && "${topic_gene_cnt}" -gt 0 && "${topic_emb_cnt}" -gt 0 ]]; then
+        echo "[train_grid] skip existing run (ONLY_MISSING=1): ${run_dir}"
+        return 0
+      fi
+      echo "[train_grid] rerun incomplete (ONLY_MISSING=1): ${run_dir} (cell_topic=${cell_topic_cnt} topic_gene=${topic_gene_cnt} topic_emb=${topic_emb_cnt})"
+    fi
+  fi
+
   _wait_for_slot
   local gpu="${FREE_GPUS[0]}"
   FREE_GPUS=("${FREE_GPUS[@]:1}")
@@ -234,7 +253,7 @@ for dataset in "${DATASETS[@]}"; do
 done
 
 echo "[train_grid] waiting for remaining jobs: ${#RUNNING_PIDS[@]}"
-for pid in "${RUNNING_PIDS[@]:-}"; do
+for pid in "${RUNNING_PIDS[@]}"; do
   wait "${pid}" || true
 done
 echo "[train_grid] all jobs finished."
