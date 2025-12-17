@@ -227,7 +227,12 @@ def main() -> int:
 
     rows: List[Dict[str, object]] = []
     for i, run_dir in enumerate(run_dirs, start=1):
-        print(f"[eval_results_to_csv] ({i}/{len(run_dirs)}) evaluating: {run_dir.name}")
+        rel = run_dir
+        try:
+            rel = run_dir.relative_to(repo_root)
+        except Exception:
+            pass
+        print(f"[eval_results_to_csv] ({i}/{len(run_dirs)}) evaluating: {rel}")
         try:
             row = _run_one(
                 repo_root=repo_root,
