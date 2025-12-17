@@ -537,7 +537,7 @@ def train_fastopic_model(
         verbose=verbose,
         log_interval=10,
         low_memory=True,
-        low_memory_batch_size=2048
+        low_memory_batch_size=512
     )
     
     # Train model
