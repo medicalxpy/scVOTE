@@ -149,18 +149,21 @@ fi
 echo "[train_grid] stage 2/2: training (one job per GPU)"
 
 MAX_PARALLEL="${MAX_PARALLEL:-${#GPU_IDS[@]}}"
-declare -A PID2GPU
-declare -a RUNNING_PIDS
-declare -a FREE_GPUS
+declare -A PID2GPU=()
+declare -a RUNNING_PIDS=()
+declare -a FREE_GPUS=()
 FREE_GPUS=("${GPU_IDS[@]}")
 
 _reap_finished() {
   local new_pids=()
-  for pid in "${RUNNING_PIDS[@]:-}"; do
+  for pid in "${RUNNING_PIDS[@]}"; do
+    if [[ -z "${pid}" ]]; then
+      continue
+    fi
     if kill -0 "${pid}" 2>/dev/null; then
       new_pids+=("${pid}")
     else
-      local g="${PID2GPU[${pid}]:-}"
+      local g="${PID2GPU["${pid}"]-}"
       if [[ -n "${g}" ]]; then
         FREE_GPUS+=("${g}")
       fi
@@ -204,7 +207,8 @@ _launch_controlled() {
   fi
 
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo \"nohup bash -c '$cmd' > ${log_path} 2>&1 &\"\n    return 0
+    echo "nohup bash -c '$cmd' > ${log_path} 2>&1 &"
+    return 0
   fi
 
   nohup bash -c "${cmd}" > "${log_path}" 2>&1 &
