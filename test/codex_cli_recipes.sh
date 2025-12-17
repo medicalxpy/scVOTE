@@ -70,6 +70,9 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 
 # One-shot launcher (starts jobs via nohup):
 # nohup bash -c 'bash test/train_grid.sh' > logs/train_grid.log 2>&1 &
+#
+# Only compute embeddings (no training):
+# nohup bash -c 'EMBED_ONLY=1 bash test/train_grid.sh' > logs/embed_grid.log 2>&1 &
 
 
 ###############################################################################
