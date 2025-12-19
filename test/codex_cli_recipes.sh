@@ -39,9 +39,10 @@
 # - 例：PBMC4k + structure + K=50 → results/PBMC4k_structure_K50/
 # - 例：PBMC4k + contrastive + K=50 → results/PBMC4k_contrastive_K50/
 # - 可选：TOPIC_DIVERSITY_WEIGHT=1e-3（topic diversity 正则，0 表示关闭）
+# - 可选：SINKHORN_BP_STEPS=10（只对 Sinkhorn 最后 N 步反传，降低显存；0 表示关闭）
 # - 兼容：如需写到 results/tuning/<RUN_TAG>/，设置 RUN_TAG 即可
 #
-nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY_WEIGHT=1e-3 bash train.sh PBMC4k' \
+nohup bash -c 'N_TOPICS=50 SINKHORN_BP_STEPS=10 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY_WEIGHT=1e-3 bash train.sh PBMC4k' \
   > logs/train_PBMC4k_contrastive_K50.log 2>&1 &
 #
 # 对应训练产物的 dataset 名一般为：

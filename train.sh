@@ -19,6 +19,7 @@ LR=${LR:-0.01}
 DT_ALPHA=${DT_ALPHA:-1}
 TW_ALPHA=${TW_ALPHA:-8}
 THETA_TEMP=${THETA_TEMP:-5}
+SINKHORN_BP_STEPS=${SINKHORN_BP_STEPS:-0}
 N_TOP_GENES_TRAIN=${N_TOP_GENES_TRAIN:-0}
 N_TOP_GENES_EMB=${N_TOP_GENES_EMB:-0}
 EMB_MAX_CELLS=${EMB_MAX_CELLS:-}
@@ -155,6 +156,7 @@ python "${ROOT_DIR}/train_fastopic.py" \
   --DT_alpha ${DT_ALPHA} \
   --TW_alpha ${TW_ALPHA} \
   --theta_temp ${THETA_TEMP} \
+  --sinkhorn_bp_steps ${SINKHORN_BP_STEPS} \
   --n_top_genes ${N_TOP_GENES_TRAIN} \
   --align_alpha ${ALIGN_ALPHA} \
   --align_beta ${ALIGN_BETA} \
