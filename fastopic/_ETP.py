@@ -12,13 +12,11 @@ class ETP(nn.Module):
         init_b_dist=None,
         OT_max_iter=5000,
         stop_thr=0.5e-2,
-        bp_steps: int = 0,
     ):
         super().__init__()
         self.sinkhorn_alpha = sinkhorn_alpha
         self.OT_max_iter = OT_max_iter
         self.stop_thr = stop_thr
-        self.bp_steps = int(bp_steps) if bp_steps is not None else 0
         self.init_a_dist = init_a_dist
         self.init_b_dist = init_b_dist
 
@@ -54,85 +52,28 @@ class ETP(nn.Module):
         log_K = -M * self.sinkhorn_alpha  # Shape: (n, m)
 
         # Sinkhorn iterations in log-domain
-        err = 1.0
+        err = 1
         cpt = 0
-        bp_steps = max(0, int(self.bp_steps))
-        if bp_steps > 0:
-            bp_steps = min(bp_steps, int(self.OT_max_iter))
-            no_grad_max_iter = max(0, int(self.OT_max_iter) - bp_steps)
+        while err > self.stop_thr and cpt < self.OT_max_iter:
+            # LOG-DOMAIN UPDATE: log(v) = log(b) - logsumexp(log(K^T) + log(u), dim=0)
+            # This is equivalent to: v = b / (K^T @ u) but numerically stable
+            log_Ku = log_K.T + log_u.T  # Shape: (m, n)
+            log_v = log_b - torch.logsumexp(log_Ku, dim=1).unsqueeze(1)  # Shape: (m, 1)
 
-            # Phase 1: solve (almost) to convergence without building a long autograd graph.
-            with torch.no_grad():
-                log_K_ng = (-M.detach() * self.sinkhorn_alpha)
-                log_a_ng = log_a.detach()
-                log_b_ng = log_b.detach()
-                a_ng = a.detach()
-                b_ng = b.detach()
-                log_u_ng = torch.zeros_like(log_a_ng)
-                log_v_ng = torch.zeros_like(log_b_ng)
+            # LOG-DOMAIN UPDATE: log(u) = log(a) - logsumexp(log(K) + log(v^T), dim=1)
+            # This is equivalent to: u = a / (K @ v) but numerically stable
+            log_Kv = log_K + log_v.T  # Shape: (n, m)
+            log_u = log_a - torch.logsumexp(log_Kv, dim=1).unsqueeze(1)  # Shape: (n, 1)
 
-                err_ng = 1.0
-                cpt_ng = 0
-                while err_ng > self.stop_thr and cpt_ng < no_grad_max_iter:
-                    log_Ku = log_K_ng.T + log_u_ng.T
-                    log_v_ng = log_b_ng - torch.logsumexp(log_Ku, dim=1).unsqueeze(1)
+            cpt += 1
+            if cpt % 50 == 1:
+                # Absorb current scalings
+                log_K = log_K + log_u + log_v.T
+                # Reset scalings
+                log_u = torch.zeros_like(log_a)
+                log_v = torch.zeros_like(log_b)
 
-                    log_Kv = log_K_ng + log_v_ng.T
-                    log_u_ng = log_a_ng - torch.logsumexp(log_Kv, dim=1).unsqueeze(1)
-
-                    cpt_ng += 1
-                    if cpt_ng % 50 == 1:
-                        log_K_ng = log_K_ng + log_u_ng + log_v_ng.T
-                        log_u_ng = torch.zeros_like(log_a_ng)
-                        log_v_ng = torch.zeros_like(log_b_ng)
-                        err_ng = self.check_convergence(log_K_ng, log_u_ng, log_v_ng, a_ng, b_ng)
-
-            # Phase 2: run only the last `bp_steps` iterations with autograd enabled.
-            # Warm-start from the no-grad solution, but keep gradients w.r.t. M, a and b.
-            # Restore gradient flow to M while keeping the numeric warm start:
-            #   log_K = log_K_ng + (-alpha*M - (-alpha*M_detached))
-            log_K = log_K_ng + (-M * self.sinkhorn_alpha - (-M.detach() * self.sinkhorn_alpha))
-            log_u = log_u_ng.detach()
-            log_v = log_v_ng.detach()
-            cpt = cpt_ng
-            err = err_ng
-
-            for _ in range(bp_steps):
-                log_Ku = log_K.T + log_u.T
-                log_v = log_b - torch.logsumexp(log_Ku, dim=1).unsqueeze(1)
-
-                log_Kv = log_K + log_v.T
-                log_u = log_a - torch.logsumexp(log_Kv, dim=1).unsqueeze(1)
-
-                cpt += 1
-                if cpt % 50 == 1:
-                    log_K = log_K + log_u + log_v.T
-                    log_u = torch.zeros_like(log_a)
-                    log_v = torch.zeros_like(log_b)
-                    # Keep err updated for debugging/consistency, but do not early-stop.
-                    err = self.check_convergence(log_K, log_u, log_v, a.detach(), b.detach())
-
-        else:
-            while err > self.stop_thr and cpt < self.OT_max_iter:
-                # LOG-DOMAIN UPDATE: log(v) = log(b) - logsumexp(log(K^T) + log(u), dim=0)
-                # This is equivalent to: v = b / (K^T @ u) but numerically stable
-                log_Ku = log_K.T + log_u.T  # Shape: (m, n)
-                log_v = log_b - torch.logsumexp(log_Ku, dim=1).unsqueeze(1)  # Shape: (m, 1)
-
-                # LOG-DOMAIN UPDATE: log(u) = log(a) - logsumexp(log(K) + log(v^T), dim=1)
-                # This is equivalent to: u = a / (K @ v) but numerically stable
-                log_Kv = log_K + log_v.T  # Shape: (n, m)
-                log_u = log_a - torch.logsumexp(log_Kv, dim=1).unsqueeze(1)  # Shape: (n, 1)
-
-                cpt += 1
-                if cpt % 50 == 1:
-                    # Absorb current scalings
-                    log_K = log_K + log_u + log_v.T
-                    # Reset scalings
-                    log_u = torch.zeros_like(log_a)
-                    log_v = torch.zeros_like(log_b)
-
-                    err = self.check_convergence(log_K, log_u, log_v, a, b)
+                err = self.check_convergence(log_K, log_u, log_v, a, b)
 
         # Convert final results back to linear domain for compatibility
         u = torch.exp(log_u)  # Shape: (n, 1)

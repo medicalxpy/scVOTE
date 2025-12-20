@@ -99,7 +99,6 @@ class FastopicConfig:
     DT_alpha: float = 1.0
     TW_alpha: float = 1.0
     theta_temp: float = 2.0
-    sinkhorn_bp_steps: int = 0
     verbose: bool = True
     seed: int = 42
     filter_genept: bool = True
@@ -153,12 +152,6 @@ def parse_args():
                        help='Topic-word alpha parameter')
     parser.add_argument('--theta_temp', type=float, default=2.0,
                        help='Temperature parameter')
-    parser.add_argument(
-        '--sinkhorn_bp_steps',
-        type=int,
-        default=0,
-        help='Number of final Sinkhorn iterations kept differentiable (0 to disable truncation)',
-    )
     # HVG selection (0 disables; apply during single training preprocessing)
     parser.add_argument('--n_top_genes', type=int, default=0,
                        help='Select top-N HVGs for training (0 to disable)')
@@ -240,7 +233,6 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         DT_alpha=args.DT_alpha,
         TW_alpha=args.TW_alpha,
         theta_temp=args.theta_temp,
-        sinkhorn_bp_steps=args.sinkhorn_bp_steps,
         verbose=not args.quiet,
         seed=args.seed,
         filter_genept=not args.no_genept_filter,
@@ -534,7 +526,6 @@ def train_fastopic_model(
         DT_alpha=config.DT_alpha,
         TW_alpha=config.TW_alpha,
         theta_temp=config.theta_temp,
-        sinkhorn_bp_steps=config.sinkhorn_bp_steps,
         align_enable=config.align_enable,
         align_alpha=config.align_alpha,
         align_beta=config.align_beta,
@@ -721,7 +712,6 @@ def main():
         print(f"  Epochs: {config.epochs}")
         print(f"  Learning Rate: {config.learning_rate}")
         print(f"  Early stopping patience: {config.patience}")
-        print(f"  Sinkhorn BP steps: {config.sinkhorn_bp_steps}")
         print(f"  Structure alignment (Laplacian+CKA): {config.align_enable}")
         print(f"  GenePT contrastive weight: {config.genept_loss_weight}")
         print(f"  GenePT gene filtering: {config.filter_genept}")

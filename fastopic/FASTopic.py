@@ -27,7 +27,6 @@ class FASTopic:
         DT_alpha: float = 3.0,
         TW_alpha: float = 2.0,
         theta_temp: float = 1.0,
-        sinkhorn_bp_steps: int = 0,
         # Structural alignment (Laplacian + CKA)
         align_enable: bool = True,
         align_alpha: float = 1e-3,
@@ -71,7 +70,6 @@ class FASTopic:
             theta_temp,
             DT_alpha,
             TW_alpha,
-            sinkhorn_bp_steps=sinkhorn_bp_steps,
             genept_loss_weight=genept_loss_weight,
             topic_diversity_weight=topic_diversity_weight,
             align_enable=align_enable,

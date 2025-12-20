@@ -18,7 +18,6 @@ class fastopic(nn.Module):
                  theta_temp: float = 1.0,
                  DT_alpha: float = 3.0,
                  TW_alpha: float = 2.0,
-                 sinkhorn_bp_steps: int = 0,
                  genept_proj_dim: int = 512,
                  genept_proj_hidden: int = 1024,
                  genept_temperature: float = 0.1,
@@ -38,7 +37,6 @@ class fastopic(nn.Module):
         self.num_topics = num_topics
         self.DT_alpha = DT_alpha
         self.TW_alpha = TW_alpha
-        self.sinkhorn_bp_steps = int(sinkhorn_bp_steps) if sinkhorn_bp_steps is not None else 0
         self.theta_temp = theta_temp
         self.genept_proj_dim = genept_proj_dim
         self.genept_proj_hidden = genept_proj_hidden
@@ -141,8 +139,8 @@ class fastopic(nn.Module):
         if not _fitted or self.word_projector is None:
             self.word_projector = self._build_projector(embed_size, self.genept_proj_dim)
 
-        self.DT_ETP = ETP(self.DT_alpha, init_b_dist=self.topic_weights, bp_steps=self.sinkhorn_bp_steps)
-        self.TW_ETP = ETP(self.TW_alpha, init_b_dist=self.word_weights, bp_steps=self.sinkhorn_bp_steps)
+        self.DT_ETP = ETP(self.DT_alpha, init_b_dist=self.topic_weights)
+        self.TW_ETP = ETP(self.TW_alpha, init_b_dist=self.word_weights)
 
         # Build reference for structural alignment if enabled and vocab available
         try:
