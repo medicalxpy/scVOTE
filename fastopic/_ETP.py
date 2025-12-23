@@ -54,7 +54,9 @@ def _sinkhorn_inline(
         P = P / torch.clamp(alpha, min=tiny) * r_
 
         beta = torch.sum(P, dim=1, keepdim=True)
-        err = torch.max(torch.abs(beta - c_))
+        # Use L1 marginal error (bounded by 2 for probability vectors) to match
+        # the semantics of the legacy `check_convergence` implementation.
+        err = torch.sum(torch.abs(beta - c_), dim=2).max()
         if float(err.item()) <= float(eps):
             break
         P = P / torch.clamp(beta, min=tiny) * c_
@@ -126,6 +128,7 @@ class _OptimalTransportPlan(torch.autograd.Function):
 
         alpha = torch.sum(P, dim=2)
         beta = torch.sum(P, dim=1)
+        beta = torch.clamp(beta, min=1e-30)
 
         vHAt1 = torch.sum(dJdM[:, 1:H, 0:W], dim=2).view(B, H - 1, 1)
         vHAt2 = torch.sum(dJdM, dim=1).view(B, W, 1)
@@ -133,6 +136,8 @@ class _OptimalTransportPlan(torch.autograd.Function):
         P_sub = P[:, 1:H, 0:W]
         PdivC = P_sub / beta.view(B, 1, W)
         RminusPPdivC = torch.diag_embed(alpha[:, 1:H]) - torch.bmm(P_sub, PdivC.transpose(1, 2))
+        jitter = 1e-6
+        RminusPPdivC = RminusPPdivC + jitter * torch.eye(H - 1, device=M.device, dtype=M.dtype).view(1, H - 1, H - 1)
 
         try:
             chol = torch.linalg.cholesky(RminusPPdivC)
