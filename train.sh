@@ -170,16 +170,16 @@ python "${ROOT_DIR}/train_fastopic.py" \
   # --no_align
 
 echo "[train.sh] Evaluating clustering quality (ARI/NMI)"
-python "${ROOT_DIR}/evaluation.py" \
-  --adata_path "${ADATA_PATH}" \
-  --results_dir "${OUTPUT_DIR_RUN}" \
-  --dataset "${RUN_DATASET}" \
-  --n_topics ${N_TOPICS} \
-  --label_key "${LABEL_KEY:-cell_type}" \
-  --res_min ${RES_MIN:-0.0} \
-  --res_max ${RES_MAX:-2.0} \
-  --res_step ${RES_STEP:-0.1} \
-  --out_dir "${EVAL_OUT_DIR}" \
-  --tag "${RUN_TAG}"
+# python "${ROOT_DIR}/evaluation.py" \
+#   --adata_path "${ADATA_PATH}" \
+#   --results_dir "${OUTPUT_DIR_RUN}" \
+#   --dataset "${RUN_DATASET}" \
+#   --n_topics ${N_TOPICS} \
+#   --label_key "${LABEL_KEY:-cell_type}" \
+#   --res_min ${RES_MIN:-0.0} \
+#   --res_max ${RES_MAX:-2.0} \
+#   --res_step ${RES_STEP:-0.1} \
+#   --out_dir "${EVAL_OUT_DIR}" \
+#   --tag "${RUN_TAG}"
 
 echo "[train.sh] Done. Results saved to ${RESULTS_DIR}"

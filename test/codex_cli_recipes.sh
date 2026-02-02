@@ -101,19 +101,17 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 #   - 原始数据在 data/PBMC12k.h5ad
 #   - obs 中 batch 列为 batch，cell type 列为 cell_type
 
-# python -m incremental_eval.batch_effect_single \
-#   --dataset PBMC12k_vae_align \
-#   --results_dir results/tuning/PBMC12k_structure \
-#   --adata data/PBMC12k.h5ad \
-#   --batch_key batch \
-#   --celltype_key cell_type \
-#   --n_topics 50 \
-#   --out_dir results/incremental_eval/batch_effect \
-#   --tag PBMC12k_structure \
-#   --max_cells 8000 \
-#   --sparsity_threshold 0.20 \
-#   --coherence_top_n 20 \
-#   --coherence_threshold 0.20
+python -m incremental_eval.batch_effect_single \
+  --dataset PBMC12k_vae_align \
+  --results_dir results/tuning/PBMC12k_structure \
+  --adata data/PBMC12k.h5ad \
+  --batch_key batch \
+  --celltype_key cell_type \
+  --n_topics 50 \
+  --out_dir results/incremental_eval/batch_effect \
+  --tag PBMC12k_structure \
+  --sparsity_threshold 0.20 \
+  --coherence_threshold 0.20
 
 
 ###############################################################################
@@ -168,16 +166,14 @@ nohup bash -c 'N_TOPICS=50 STRUCTURE_ALIGN=0 CONTRASTIVE_ALIGN=1 TOPIC_DIVERSITY
 ###############################################################################
 
 # （1）仅提取 cell embedding（一般不需要手动调，用 train.sh 即可）
-# python get_cell_emb.py \
-#   --input_data data/PBMC4k.h5ad \
-#   --dataset_name PBMC4k \
-#   --output_dir results/cell_embedding \
-#   --n_latent 128 \
-#   --gene_list_path data/gene_list/C2_C5_GO.csv \
-#   --batch_key batch \
-#   --labels_key cell_type \
-#   --early_stopping \
-#   --verbose
+python get_cell_emb.py \
+  --input_data data/PBMC12k.h5ad \
+  --dataset_name PBMC12k \
+  --output_dir results/cell_embedding \
+  --n_latent 128 \
+  --gene_list_path data/gene_list/C2_C5_GO.csv \
+  --early_stopping \
+  --verbose
 
 # （2）只跑 evaluation（已训练好后，除了 ARI/NMI，还会输出 ORA/GSEA、TC_extrinsic、TD 等指标）
 # python evaluation.py \

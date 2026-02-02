@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import argparse
 import json
 import numpy as np
@@ -319,6 +320,7 @@ def preprocess_adata(
     Returns:
         expression_matrix: Preprocessed expression matrix (cells x genes).
         gene_names: List of gene names.
+        cell_barcodes: List of cell barcodes (obs_names) after filtering.
     """
     if verbose:
         print(f"📁 Loading adata: {adata_path}")
@@ -410,12 +412,13 @@ def preprocess_adata(
         expression_matrix = adata.X.toarray() if hasattr(adata.X, "toarray") else adata.X
     
     gene_names = adata.var_names.tolist()
+    cell_barcodes = adata.obs_names.astype(str).tolist()
     
     if verbose:
         print(f"✅ Preprocessing complete: {expression_matrix.shape}")
         print(f"✅ Gene count: {len(gene_names)}")
     
-    return expression_matrix, gene_names
+    return expression_matrix, gene_names, cell_barcodes
 
 
 def load_embeddings_and_expression(
@@ -458,7 +461,7 @@ def load_embeddings_and_expression(
         print(f"✅ Cell embeddings: {cell_embeddings.shape}")
     
     # Preprocess adata
-    expression_matrix, gene_names = preprocess_adata(
+    expression_matrix, gene_names, exp_barcodes = preprocess_adata(
         adata_path=adata_path,
         verbose=verbose,
         filter_genept=filter_genept,
@@ -466,18 +469,34 @@ def load_embeddings_and_expression(
         gene_list_path=gene_list_path,
     )
     
-    # Ensure matching cell counts
-    n_cells_emb = cell_embeddings.shape[0]
-    n_cells_exp = expression_matrix.shape[0]
-    
-    if n_cells_emb != n_cells_exp:
-        min_cells = min(n_cells_emb, n_cells_exp)
+    barcode_path = Path(embedding_file).with_suffix("").as_posix().replace('_genept', '') + "_barcodes.txt"
+    emb_barcodes: Optional[List[str]] = None
+    if os.path.exists(barcode_path):
+        with open(barcode_path, "r", encoding="utf-8") as f:
+            emb_barcodes = [line.strip() for line in f]
+
+    if emb_barcodes is not None and exp_barcodes:
+        exp_index = {bc: i for i, bc in enumerate(exp_barcodes)}
+        common_barcodes = [bc for bc in emb_barcodes if bc in exp_index]
+        idx_emb = [i for i, bc in enumerate(emb_barcodes) if bc in exp_index]
+        idx_exp = [exp_index[bc] for bc in common_barcodes]
+
+        if len(common_barcodes) == 0:
+            raise ValueError(
+                "No overlapping barcodes between embeddings and adata after preprocessing."
+            )
+
+        cell_embeddings = cell_embeddings[idx_emb]
+        expression_matrix = expression_matrix[idx_exp]
         if verbose:
-            print(f"⚠️ Cell count mismatch (embedding: {n_cells_emb}, expression: {n_cells_exp})")
-            print(f"Using first {min_cells} cells")
+            print(
+                f"✅ Aligned cells by barcodes: {len(common_barcodes)}/{len(emb_barcodes)}"
+            )
+    else:
+        raise ValueError(
+            "No barcodes found for embedding file."
+        )
         
-        cell_embeddings = cell_embeddings[:min_cells]
-        expression_matrix = expression_matrix[:min_cells]
     
     return cell_embeddings, expression_matrix, gene_names
 

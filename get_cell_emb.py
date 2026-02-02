@@ -282,6 +282,18 @@ def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str
     return str(path)
 
 
+def save_cell_barcodes(obs_names: pd.Index, config: EmbeddingConfig) -> str:
+    filename = f"{config.dataset_name}_barcodes.txt"
+    path = Path(config.output_dir) / filename
+    with path.open("w") as f:
+        for barcode in obs_names:
+            f.write(f"{barcode}\n")
+
+    if config.verbose:
+        logger.info("Cell barcodes saved to: %s", path)
+    return str(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cell embeddings via variational model")
     parser.add_argument("--input_data", required=True, help="Input .h5ad file path")
@@ -361,6 +373,7 @@ def main() -> None:
         cell_embeddings = extract_embeddings(adata_preprocessed, config)
 
     saved_file = save_embeddings(cell_embeddings, config)
+    saved_barcodes = save_cell_barcodes(adata_preprocessed.obs_names, config)
 
     logger.info("=== Cell embedding extraction completed ===")
     logger.info("Dataset: %s", config.dataset_name)
@@ -368,6 +381,7 @@ def main() -> None:
     logger.info("Embedding dim: %d", cell_embeddings.shape[1])
     logger.info("Method: vae")
     logger.info("Saved to: %s", saved_file)
+    logger.info("Barcodes saved to: %s", saved_barcodes)
 
 
 if __name__ == "__main__":

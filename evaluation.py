@@ -40,6 +40,7 @@ import scanpy as sc
 from scipy.stats import fisher_exact
 from scipy.stats import hypergeom
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.cluster import KMeans
 
 
 DEFAULT_LABEL_CANDIDATES: List[str] = [
@@ -51,6 +52,7 @@ DEFAULT_LABEL_CANDIDATES: List[str] = [
     "labels",
     "cluster",
     "clusters",
+    "CellType", # PBMC sca dataset
 ]
 
 
@@ -182,7 +184,7 @@ def _load_or_build_gobp_sparse(
             json.dump(gene_to_col, f, ensure_ascii=False)
         return A, term_sizes, gene_to_col, source
 
-    term_to_genes = _load_go_bp_genesets(base_dataset)
+    term_to_genes = _load_go_bp_genesets()
     A, term_sizes, gene_to_col = _build_term_gene_sparse(term_to_genes)
     return A, term_sizes, gene_to_col, source
 
@@ -262,7 +264,11 @@ class EvalConfig:
     res_max: float = 2.0
     res_step: float = 0.1
     out_dir: Optional[str] = None
+    low_res: float = 0.01
+    high_res: float = 5.0
+    bisect_iter: int = 18
     seed: int = 0
+
 
 
 def _resolve_cell_topic_path(cfg: EvalConfig) -> Path:
@@ -359,15 +365,13 @@ def _load_celltype_genesets(base_dataset: str) -> Dict[str, set]:
     return genesets
 
 
-def _load_go_bp_genesets(base_dataset: str) -> Dict[str, set]:
+def _load_go_bp_genesets() -> Dict[str, set]:
     """
-    Load GO_BP gene sets for a dataset.
-
-    Expects CSV at data/gene_sets/{dataset}_GO_BP_genesets.csv with columns:
+    Load common C2_C5_GO gene sets.
     - go_term (or similar name)
     - gene
     """
-    path = GENESET_DIR / f"{base_dataset}_GO_BP_genesets.csv"
+    path = GENESET_DIR / f"C2_C5_GO_genesets.csv"
     if not path.exists():
         raise FileNotFoundError(f"GO_BP geneset file not found: {path}")
     df = pd.read_csv(path)
@@ -690,6 +694,42 @@ def _compute_topic_diversity(
     return float(td_value)
 
 
+def _leiden_K_pred(adata, res, seed):
+    sc.tl.leiden(adata, resolution=res, key_added="_leiden_tmp", random_state=seed)
+    pred = adata.obs["_leiden_tmp"].astype(str).to_numpy()
+    K = adata.obs["_leiden_tmp"].nunique()
+    return int(K), pred
+
+
+def _bisect_resolution_to_match_K(adata, K_target, low_res, high_res, bisect_iter, seed):
+    # Ensure neighbors are present
+    sc.pp.pca(adata)
+    sc.pp.neighbors(adata, use_rep="X")
+    
+    lo, hi = low_res, high_res
+    best_gap = 1e9
+    best = None  # (res, K, pred)
+
+    for _ in range(bisect_iter):
+        mid = (lo + hi) / 2
+        K_mid, pred_mid = _leiden_K_pred(adata, mid, seed)
+        gap = abs(K_mid - K_target)
+
+        if gap < best_gap:
+            best_gap = gap
+            best = (mid, K_mid, pred_mid)
+            if gap == 0:
+                break
+
+        # 经验单调：res ↑ → K ↑
+        if K_mid < K_target:
+            lo = mid
+        else:
+            hi = mid
+
+    return best  # (best_res, K_found, pred)
+
+
 def _scan_resolutions_for_best_ari(
     adata: "sc.AnnData", label_key: str, res_min: float, res_max: float, res_step: float, seed: int
 ) -> Tuple[float, float, float]:
@@ -731,7 +771,7 @@ def _scan_resolutions_for_best_ari(
         sc.tl.leiden(adata, resolution=best_res, random_state=seed, key_added="_best_clust")
     best_nmi = float(normalized_mutual_info_score(adata.obs[label_key], adata.obs["_best_clust"]))
 
-    return best_res, best_ari, best_nmi
+    return best_res, adata.obs["_best_clust"].nunique(), best_ari, best_nmi
 
 
 def evaluate(cfg: EvalConfig) -> Dict[str, float]:
@@ -773,19 +813,30 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
     adata.obs[label_key] = labels_df[label_key].values
 
     # Compute ARI / NMI via resolution scan
-    best_res, ari, nmi = _scan_resolutions_for_best_ari(
-        adata=adata,
-        label_key=label_key,
-        res_min=cfg.res_min,
-        res_max=cfg.res_max,
-        res_step=cfg.res_step,
-        seed=cfg.seed,
-    )
+    # best_res, n_clusters, ari, nmi = _scan_resolutions_for_best_ari(
+    #     adata=adata,
+    #     label_key=label_key,
+    #     res_min=cfg.res_min,
+    #     res_max=cfg.res_max,
+    #     res_step=cfg.res_step,
+    #     seed=cfg.seed,
+    # )
+
+    best_res, n_clusters, pred = _bisect_resolution_to_match_K(adata, adata.obs[label_key].nunique(),
+                                                           low_res=cfg.low_res, high_res=cfg.high_res,
+                                                           bisect_iter=cfg.bisect_iter, seed=cfg.seed)
+    adata.obs['_leiden_clust'] = pred
+
+    # perform KMeans based on label_key
+    adata.obs['_kmeans_clust'] = KMeans(n_clusters=adata.obs[label_key].nunique(), random_state=cfg.seed).fit_predict(adata.X)
 
     metrics: Dict[str, Optional[float]] = {
         "best_resolution": float(best_res),
-        "ARI": float(ari),
-        "NMI": float(nmi),
+        "community-n_clusters": n_clusters,
+        "community-ARI": float(adjusted_rand_score(adata.obs[label_key], adata.obs['_leiden_clust'])),
+        "community-NMI": float(normalized_mutual_info_score(adata.obs[label_key], adata.obs['_leiden_clust'])),
+        'kmeans-ARI': float(adjusted_rand_score(adata.obs[label_key], adata.obs['_kmeans_clust'])),
+        'kmeans-NMI': float(normalized_mutual_info_score(adata.obs[label_key], adata.obs['_kmeans_clust'])),
         "n_cells": int(n),
         "n_topics": int(X.shape[1]) if X.ndim == 2 else int(cfg.n_topics or -1),
         "dataset": cfg.dataset if cfg.dataset else "",
@@ -831,7 +882,7 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
 
         # TC / TD metrics based on genesets (using GO_BP as pathway-style sets).
         try:
-            go_genesets_tc = _load_go_bp_genesets(base_dataset)
+            go_genesets_tc = _load_go_bp_genesets()
             tc_extrinsic = _compute_tc_extrinsic_from_genesets(
                 gene_topic_df, go_genesets_tc, top_n=10
             )
@@ -869,7 +920,7 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
 
         # ORA + SPP (GO_BP gene sets)
         try:
-            go_genesets = _load_go_bp_genesets(base_dataset)
+            go_genesets = _load_go_bp_genesets()
             ora_go, ora_go_table = _ora_from_gene_topics(
                 gene_topic_df, go_genesets, top_n=50
             )
@@ -898,7 +949,7 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
 
         # GSEA (GO_BP gene sets)
         try:
-            go_genesets_gsea = _load_go_bp_genesets(base_dataset)
+            go_genesets_gsea = _load_go_bp_genesets()
             gsea_go = _gsea_from_gene_topics(
                 gene_topic_df, go_genesets_gsea, p=1.0
             )
@@ -925,9 +976,13 @@ def evaluate(cfg: EvalConfig) -> Dict[str, float]:
     if metrics["dataset"]:
         print("- Dataset:", metrics["dataset"])
     print(f"- Cells: {metrics['n_cells']}")
+    print(f"- True Clusters: {adata.obs[label_key].nunique()}")
     print(f"- Best resolution: {metrics['best_resolution']:.2f}")
-    print(f"- ARI: {metrics['ARI']:.4f}")
-    print(f"- NMI: {metrics['NMI']:.4f}")
+    print(f"- Community Clusters: {metrics['community-n_clusters']}")
+    print(f"- Community ARI: {metrics['community-ARI']:.4f}")
+    print(f"- Community NMI: {metrics['community-NMI']:.4f}")
+    print(f"- KMeans ARI: {metrics['kmeans-ARI']:.4f}")
+    print(f"- KMeans NMI: {metrics['kmeans-NMI']:.4f}")
 
     # Additional metrics summary
     print("\n🔎 Additional metrics")
