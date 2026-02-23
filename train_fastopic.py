@@ -469,9 +469,29 @@ def load_embeddings_and_expression(
         gene_list_path=gene_list_path,
     )
     
-    barcode_path = Path(embedding_file).with_suffix("").as_posix().replace('_genept', '') + "_barcodes.txt"
+    # Try embedding-specific barcodes first, then dataset-level fallback.
     emb_barcodes: Optional[List[str]] = None
-    if os.path.exists(barcode_path):
+    embedding_path = Path(embedding_file)
+    stem_no_ext = embedding_path.with_suffix("")
+
+    barcode_candidates: List[Path] = [
+        Path(str(stem_no_ext) + "_barcodes.txt"),
+    ]
+
+    dataset_stem = stem_no_ext.name
+    for suffix in ("_genept", "_vae"):
+        if dataset_stem.endswith(suffix):
+            dataset_stem = dataset_stem[: -len(suffix)]
+    if dataset_stem != stem_no_ext.name:
+        barcode_candidates.append(stem_no_ext.with_name(f"{dataset_stem}_barcodes.txt"))
+
+    barcode_path: Optional[Path] = None
+    for cand in barcode_candidates:
+        if cand.exists():
+            barcode_path = cand
+            break
+
+    if barcode_path is not None:
         with open(barcode_path, "r", encoding="utf-8") as f:
             emb_barcodes = [line.strip() for line in f]
 
@@ -493,8 +513,9 @@ def load_embeddings_and_expression(
                 f"✅ Aligned cells by barcodes: {len(common_barcodes)}/{len(emb_barcodes)}"
             )
     else:
+        checked = ", ".join([str(p) for p in barcode_candidates])
         raise ValueError(
-            "No barcodes found for embedding file."
+            "No barcodes found for embedding file. Checked: " + checked
         )
         
     
