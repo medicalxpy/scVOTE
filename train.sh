@@ -9,8 +9,20 @@ dataset_name=${1:-"Spleen"}
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADATA_PATH="${ROOT_DIR}/data/${dataset_name}.h5ad"
 EMB_DIR="${ROOT_DIR}/results/cell_embedding"
-EMB_PATH="${EMB_DIR}/${dataset_name}_vae.pkl"
+EMBED_METHOD=${EMBED_METHOD:-vae}
+SCIMILARITY_MODEL_PATH=${SCIMILARITY_MODEL_PATH:-}
+SCIMILARITY_USE_GPU=${SCIMILARITY_USE_GPU:-0}
+EMB_PATH="${EMB_DIR}/${dataset_name}_${EMBED_METHOD}.pkl"
 RESULTS_DIR="${ROOT_DIR}/results"
+
+case "${EMBED_METHOD}" in
+  vae|scimilarity)
+    ;;
+  *)
+    echo "[train.sh] Unsupported EMBED_METHOD='${EMBED_METHOD}'. Expected 'vae' or 'scimilarity'." >&2
+    exit 1
+    ;;
+esac
 
 # Training params
 N_TOPICS=${N_TOPICS:-50}
@@ -88,6 +100,7 @@ EVAL_OUT_DIR="${OUTPUT_DIR_RUN}/evaluation"
 
 echo "[train.sh] Dataset=${dataset_name}"
 echo "[train.sh] ADATA=${ADATA_PATH}"
+echo "[train.sh] EMBED_METHOD=${EMBED_METHOD}"
 echo "[train.sh] EMBEDDING=${EMB_PATH}"
 echo "[train.sh] Output dir=${OUTPUT_DIR_RUN} (tag='${RUN_TAG}')"
 
@@ -98,27 +111,39 @@ if [[ -f "${EMB_PATH}" && "${FORCE_REEMBED:-0}" != "1" ]]; then
   echo "[train.sh] Found existing embedding: ${EMB_PATH} (skip, set FORCE_REEMBED=1 to recompute)"
 else
 
-  EMB_GENEPT_FLAG=""
-  if [[ "${GENEPT_FILTER}" != "1" ]]; then
-    EMB_GENEPT_FLAG="--no_genept_filter"
-  fi
-
-  EMB_MAX_CELLS_ARG=()
-  if [[ -n "${EMB_MAX_CELLS}" ]]; then
-    EMB_MAX_CELLS_ARG=(--max_cells "${EMB_MAX_CELLS}")
-  fi
-
-  python "${ROOT_DIR}/get_cell_emb.py" \
-    --input_data "${ADATA_PATH}" \
-    --dataset_name "${dataset_name}" \
-    --n_latent 128 \
-    --output_dir "${EMB_DIR}" \
-    --n_top_genes "${N_TOP_GENES_EMB}" \
-    --gene_list_path "${GENE_LIST_PATH}" \
-    ${EMB_GENEPT_FLAG} \
-    "${EMB_MAX_CELLS_ARG[@]}" \
-    --early_stopping \
+  GET_CELL_ARGS=(
+    python "${ROOT_DIR}/get_cell_emb.py"
+    --input_data "${ADATA_PATH}"
+    --dataset_name "${dataset_name}"
+    --embedding_method "${EMBED_METHOD}"
+    --n_latent 128
+    --output_dir "${EMB_DIR}"
+    --n_top_genes "${N_TOP_GENES_EMB}"
+    --gene_list_path "${GENE_LIST_PATH}"
+    --early_stopping
     --verbose
+  )
+
+  if [[ "${GENEPT_FILTER}" != "1" ]]; then
+    GET_CELL_ARGS+=(--no_genept_filter)
+  fi
+
+  if [[ -n "${EMB_MAX_CELLS}" ]]; then
+    GET_CELL_ARGS+=(--max_cells "${EMB_MAX_CELLS}")
+  fi
+
+  if [[ "${EMBED_METHOD}" == "scimilarity" ]]; then
+    if [[ -z "${SCIMILARITY_MODEL_PATH}" ]]; then
+      echo "[train.sh] SCIMILARITY_MODEL_PATH is required when EMBED_METHOD=scimilarity" >&2
+      exit 1
+    fi
+    GET_CELL_ARGS+=(--scimilarity_model_path "${SCIMILARITY_MODEL_PATH}")
+    if [[ "${SCIMILARITY_USE_GPU}" == "1" ]]; then
+      GET_CELL_ARGS+=(--scimilarity_use_gpu)
+    fi
+  fi
+
+  "${GET_CELL_ARGS[@]}"
 fi
   
 # echo "[train.sh] Training WITHOUT alignment (baseline)"
@@ -136,10 +161,10 @@ fi
 #   --no_align \
 #   --genept_loss_weight 1e-3
 
-RUN_DATASET_SUFFIX="vae_align"
+RUN_DATASET_SUFFIX="${EMBED_METHOD}_align"
 if [[ "${STRUCTURE_ALIGN}" == "0" && "${CONTRASTIVE_ALIGN}" == "0" ]]; then
   echo "[train.sh] Training WITHOUT alignment (baseline)"
-  RUN_DATASET_SUFFIX="vae"
+  RUN_DATASET_SUFFIX="${EMBED_METHOD}"
 else
   echo "[train.sh] Training WITH alignment (structure=${STRUCTURE_ALIGN}, contrastive=${CONTRASTIVE_ALIGN})"
 fi

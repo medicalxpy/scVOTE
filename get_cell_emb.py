@@ -29,12 +29,20 @@ except ImportError:  # pragma: no cover
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+SCIMILARITY_REQUIRED_MODEL_FILES = (
+    "encoder.ckpt",
+    "gene_order.tsv",
+    "layer_sizes.json",
+    "label_ints.csv",
+)
+
 
 @dataclass
 class EmbeddingConfig:
     input_data: str
     dataset_name: str = "dataset"
     output_dir: str = "results/cell_embedding"
+    embedding_method: str = "vae"
     max_cells: Optional[int] = None
     n_top_genes: Optional[int] = 0
     # Gene-level preprocessing (keep in sync with train_fastopic.py)
@@ -53,6 +61,8 @@ class EmbeddingConfig:
     early_stopping: bool = True
     early_stopping_patience: int = 20
     check_val_every_n_epoch: int = 1
+    scimilarity_model_path: Optional[str] = None
+    scimilarity_use_gpu: bool = False
     seed: int = 0
     verbose: bool = False
 
@@ -64,6 +74,24 @@ def _copy_counts(matrix):
     if sp is not None and sp.issparse(matrix):
         return matrix.tocsr().astype(np.float32)
     return np.asarray(matrix, dtype=np.float32)
+
+
+def _prepare_counts_layer(adata: ad.AnnData) -> ad.AnnData:
+    if "counts" in adata.layers:
+        base_counts = adata.layers["counts"]
+    else:
+        base_counts = adata.X
+
+    counts = _copy_counts(base_counts)
+    if counts.shape != adata.shape:
+        raise ValueError(
+            f"Counts matrix shape {counts.shape} does not match "
+            f"AnnData shape {adata.shape} after filtering."
+        )
+
+    adata.layers["counts"] = counts
+    adata.X = counts.copy()
+    return adata
 
 
 def _load_genept_genes() -> Optional[Set[str]]:
@@ -114,10 +142,11 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
         logger.info("Raw data: %d cells × %d genes", adata.n_obs, adata.n_vars)
 
     adata = adata.copy()
+    scimilarity_mode = config.embedding_method == "scimilarity"
 
     # Gene list filtering (e.g., C2_C5_GO), to keep genes
     # consistent with train_fastopic preprocessing.
-    if config.gene_list_path:
+    if not scimilarity_mode and config.gene_list_path:
         gene_list = _load_gene_list(config.gene_list_path, verbose=config.verbose)
         if gene_list:
             current_genes = [str(g) for g in adata.var_names]
@@ -140,10 +169,11 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
 
     # Basic QC filtering on X / obs / var
     sc.pp.filter_cells(adata, min_genes=200)
-    sc.pp.filter_genes(adata, min_cells=3)
+    if not scimilarity_mode:
+        sc.pp.filter_genes(adata, min_cells=3)
 
     # GenePT gene filtering (same logic as train_fastopic.py)
-    if config.filter_genept:
+    if not scimilarity_mode and config.filter_genept:
         genept_genes = _load_genept_genes()
         if genept_genes is not None:
             current_genes = [str(g) for g in adata.var_names]
@@ -167,28 +197,9 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
         if config.verbose:
             logger.info("Cells after subsampling: %d", adata.n_obs)
 
-    # Derive a raw-counts layer aligned with the *current* adata shape.
-    # We assume that adata.X already contains raw counts (for all datasets
-    # we've normalised the files so that X holds counts). We still honour
-    # an existing layers["counts"] if present.
-    if "counts" in adata.layers:
-        base_counts = adata.layers["counts"]
-    else:
-        base_counts = adata.X
+    adata = _prepare_counts_layer(adata)
 
-    counts = _copy_counts(base_counts)
-
-    # Ensure layers["counts"] matches (n_obs, n_vars)
-    if counts.shape != adata.shape:
-        raise ValueError(
-            f"Counts matrix shape {counts.shape} does not match "
-            f"AnnData shape {adata.shape} after filtering."
-        )
-
-    adata.layers["counts"] = counts
-    adata.X = counts.copy()
-
-    if config.n_top_genes:
+    if not scimilarity_mode and config.n_top_genes:
         sc.pp.highly_variable_genes(
             adata,
             n_top_genes=config.n_top_genes,
@@ -200,7 +211,15 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
             logger.info("Selected %d highly variable genes", adata.n_vars)
 
     sc.pp.filter_cells(adata, min_counts=1)
-    sc.pp.filter_genes(adata, min_cells=1)
+    if not scimilarity_mode:
+        sc.pp.filter_genes(adata, min_cells=1)
+
+    adata = _prepare_counts_layer(adata)
+
+    if scimilarity_mode and config.verbose:
+        logger.info(
+            "SCimilarity mode: skipped gene-list, GenePT, and HVG filtering to preserve raw gene space"
+        )
 
     if config.verbose:
         logger.info("Post-preprocessing: %d cells × %d genes", adata.n_obs, adata.n_vars)
@@ -257,6 +276,67 @@ def train_embedding_model(adata: ad.AnnData, config: EmbeddingConfig):
     return model
 
 
+def _load_scimilarity_runtime():
+    try:
+        from scimilarity import CellEmbedding
+        from scimilarity.utils import align_dataset, lognorm_counts
+    except ImportError as exc:
+        raise ImportError(
+            "SCimilarity is not installed. Install it in the runtime environment "
+            "before using --embedding_method scimilarity."
+        ) from exc
+
+    return CellEmbedding, align_dataset, lognorm_counts
+
+
+def _validate_scimilarity_model_path(model_path_str: Optional[str]) -> Path:
+    if not model_path_str:
+        raise ValueError("SCimilarity mode requires --scimilarity_model_path.")
+
+    model_path = Path(model_path_str)
+    if not model_path.exists():
+        raise FileNotFoundError(f"SCimilarity model path does not exist: {model_path}")
+    if not model_path.is_dir():
+        raise NotADirectoryError(f"SCimilarity model path is not a directory: {model_path}")
+
+    missing = [name for name in SCIMILARITY_REQUIRED_MODEL_FILES if not (model_path / name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            "SCimilarity model directory is missing required files: " + ", ".join(missing)
+        )
+
+    return model_path
+
+
+def extract_scimilarity_embeddings(
+    adata: ad.AnnData,
+    config: EmbeddingConfig,
+) -> tuple[np.ndarray, pd.Index]:
+    model_path = _validate_scimilarity_model_path(config.scimilarity_model_path)
+
+    CellEmbedding, align_dataset, lognorm_counts = _load_scimilarity_runtime()
+
+    if config.verbose:
+        logger.info("Loading SCimilarity model from: %s", model_path)
+
+    model = CellEmbedding(model_path=str(model_path), use_gpu=config.scimilarity_use_gpu)
+
+    aligned_adata = align_dataset(adata.copy(), model.gene_order)
+    aligned_counts = _copy_counts(aligned_adata.layers.get("counts", aligned_adata.X))
+    aligned_adata.layers["counts"] = aligned_counts
+    aligned_adata.X = aligned_counts.copy()
+    aligned_adata = lognorm_counts(aligned_adata)
+
+    embeddings = np.asarray(model.get_embeddings(aligned_adata.X), dtype=np.float32)
+    if embeddings.shape[0] != aligned_adata.n_obs:
+        raise ValueError(
+            "SCimilarity embedding row count does not match filtered cells: "
+            f"{embeddings.shape[0]} vs {aligned_adata.n_obs}."
+        )
+
+    return embeddings, aligned_adata.obs_names
+
+
 def extract_embeddings(adata: ad.AnnData, config: EmbeddingConfig) -> np.ndarray:
     model = train_embedding_model(adata, config)
     latent = model.get_latent_representation(give_mean=True, batch_size=config.batch_size)
@@ -269,8 +349,12 @@ def extract_embeddings_sampled(adata: ad.AnnData, config: EmbeddingConfig) -> np
     return latent.astype(np.float32)
 
 
+def get_embedding_stem(config: EmbeddingConfig) -> str:
+    return f"{config.dataset_name}_{config.embedding_method}"
+
+
 def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str:
-    filename = f"{config.dataset_name}_vae.pkl"
+    filename = f"{get_embedding_stem(config)}.pkl"
     path = Path(config.output_dir) / filename
     with path.open("wb") as f:
         import pickle
@@ -283,7 +367,7 @@ def save_embeddings(cell_embeddings: np.ndarray, config: EmbeddingConfig) -> str
 
 
 def save_cell_barcodes(obs_names: pd.Index, config: EmbeddingConfig) -> str:
-    filename = f"{config.dataset_name}_barcodes.txt"
+    filename = f"{get_embedding_stem(config)}_barcodes.txt"
     path = Path(config.output_dir) / filename
     with path.open("w") as f:
         for barcode in obs_names:
@@ -294,11 +378,32 @@ def save_cell_barcodes(obs_names: pd.Index, config: EmbeddingConfig) -> str:
     return str(path)
 
 
+def validate_config(config: EmbeddingConfig, sample_latent: bool = False) -> None:
+    valid_methods = {"vae", "scimilarity"}
+    if config.embedding_method not in valid_methods:
+        raise ValueError(
+            f"Unsupported embedding method '{config.embedding_method}'. "
+            f"Expected one of: {sorted(valid_methods)}"
+        )
+
+    if config.embedding_method == "scimilarity":
+        _validate_scimilarity_model_path(config.scimilarity_model_path)
+        _load_scimilarity_runtime()
+        if sample_latent:
+            raise ValueError("--sample_latent is only supported for embedding_method=vae.")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Cell embeddings via variational model")
+    parser = argparse.ArgumentParser(description="Cell embeddings via VAE or SCimilarity")
     parser.add_argument("--input_data", required=True, help="Input .h5ad file path")
     parser.add_argument("--dataset_name", default="dataset", help="Dataset name")
     parser.add_argument("--output_dir", default="results/cell_embedding", help="Output directory")
+    parser.add_argument(
+        "--embedding_method",
+        choices=("vae", "scimilarity"),
+        default="vae",
+        help="Embedding backend to use",
+    )
     parser.add_argument("--max_cells", type=int, help="Max number of cells")
     parser.add_argument("--n_top_genes", type=int, default=0, help="Number of highly variable genes (0 to disable)")
     parser.add_argument(
@@ -326,6 +431,15 @@ def main() -> None:
     parser.add_argument("--early_stopping_patience", type=int, default=20, help="Early stopping patience")
     parser.add_argument("--check_val_every_n_epoch", type=int, default=1, help="Validation check frequency")
     parser.add_argument(
+        "--scimilarity_model_path",
+        help="Path to the SCimilarity model directory (required for scimilarity mode)",
+    )
+    parser.add_argument(
+        "--scimilarity_use_gpu",
+        action="store_true",
+        help="Use GPU for SCimilarity embedding if available",
+    )
+    parser.add_argument(
         "--sample_latent",
         action="store_true",
         help="Sample latent variables instead of using posterior means.",
@@ -339,6 +453,7 @@ def main() -> None:
         input_data=args.input_data,
         dataset_name=args.dataset_name,
         output_dir=args.output_dir,
+        embedding_method=args.embedding_method,
         max_cells=args.max_cells,
         n_top_genes=args.n_top_genes,
          # Gene-level preprocessing
@@ -357,9 +472,13 @@ def main() -> None:
         early_stopping=args.early_stopping,
         early_stopping_patience=args.early_stopping_patience,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
+        scimilarity_model_path=args.scimilarity_model_path,
+        scimilarity_use_gpu=args.scimilarity_use_gpu,
         seed=args.seed,
         verbose=args.verbose,
     )
+
+    validate_config(config, sample_latent=args.sample_latent)
 
     if config.verbose:
         logger.info("Loading data: %s", config.input_data)
@@ -367,19 +486,23 @@ def main() -> None:
 
     adata_preprocessed = preprocess_for_embedding(adata, config)
 
-    if args.sample_latent:
+    if config.embedding_method == "scimilarity":
+        cell_embeddings, embedding_barcodes = extract_scimilarity_embeddings(adata_preprocessed, config)
+    elif args.sample_latent:
         cell_embeddings = extract_embeddings_sampled(adata_preprocessed, config)
+        embedding_barcodes = adata_preprocessed.obs_names
     else:
         cell_embeddings = extract_embeddings(adata_preprocessed, config)
+        embedding_barcodes = adata_preprocessed.obs_names
 
     saved_file = save_embeddings(cell_embeddings, config)
-    saved_barcodes = save_cell_barcodes(adata_preprocessed.obs_names, config)
+    saved_barcodes = save_cell_barcodes(embedding_barcodes, config)
 
     logger.info("=== Cell embedding extraction completed ===")
     logger.info("Dataset: %s", config.dataset_name)
     logger.info("Cells: %d", cell_embeddings.shape[0])
     logger.info("Embedding dim: %d", cell_embeddings.shape[1])
-    logger.info("Method: vae")
+    logger.info("Method: %s", config.embedding_method)
     logger.info("Saved to: %s", saved_file)
     logger.info("Barcodes saved to: %s", saved_barcodes)
 
