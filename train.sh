@@ -36,8 +36,8 @@ N_TOP_GENES_EMB=${N_TOP_GENES_EMB:-0}
 EMB_MAX_CELLS=${EMB_MAX_CELLS:-}
 
 # Gene filtering (keep in sync with train_fastopic / get_cell_emb)
-GENE_LIST_PATH=${GENE_LIST_PATH:-"${ROOT_DIR}/data/gene_list/C2_C5_GO.csv"}
-GENEPT_FILTER=${GENEPT_FILTER:-1}   # 1: enable GenePT filtering, 0: disable
+GENE_LIST_PATH=${GENE_LIST_PATH:-"${ROOT_DIR}/data/gene_sets/reactome_human_official_genes.csv"}
+GENEPT_FILTER=${GENEPT_FILTER:-0}   # 1: enable GenePT filtering, 0: disable
 
 # Alignment params
 ALIGN_ALPHA=${ALIGN_ALPHA:-1e-3}
