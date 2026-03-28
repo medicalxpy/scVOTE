@@ -21,3 +21,4 @@ docs/
 sources/
 scimilarity/
 logs/
+*.tar.gz
