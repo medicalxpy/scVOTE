@@ -17,3 +17,5 @@ start.sh
 .agent/
 CLAUDE.md
 .DS_Store
+docs/
+sources/
