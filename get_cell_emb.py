@@ -46,8 +46,8 @@ class EmbeddingConfig:
     max_cells: Optional[int] = None
     n_top_genes: Optional[int] = 0
     # Gene-level preprocessing (keep in sync with train_fastopic.py)
-    filter_genept: bool = True
-    gene_list_path: Optional[str] = "data/gene_list/C2_C5_GO.csv"
+    filter_genept: bool = False
+    gene_list_path: Optional[str] = "data/gene_sets/reactome_human_official_genes.csv"
     batch_key: Optional[str] = None
     labels_key: Optional[str] = None
     n_latent: int = 30
@@ -144,9 +144,7 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
     adata = adata.copy()
     scimilarity_mode = config.embedding_method == "scimilarity"
 
-    # Gene list filtering (e.g., C2_C5_GO), to keep genes
-    # consistent with train_fastopic preprocessing.
-    if not scimilarity_mode and config.gene_list_path:
+    if config.gene_list_path:
         gene_list = _load_gene_list(config.gene_list_path, verbose=config.verbose)
         if gene_list:
             current_genes = [str(g) for g in adata.var_names]
@@ -218,7 +216,7 @@ def preprocess_for_embedding(adata: ad.AnnData, config: EmbeddingConfig) -> ad.A
 
     if scimilarity_mode and config.verbose:
         logger.info(
-            "SCimilarity mode: skipped gene-list, GenePT, and HVG filtering to preserve raw gene space"
+            "SCimilarity mode: applied gene-list overlap and skipped GenePT and HVG filtering"
         )
 
     if config.verbose:
@@ -409,10 +407,16 @@ def main() -> None:
     parser.add_argument(
         "--gene_list_path",
         type=str,
-        default="data/gene_list/C2_C5_GO.csv",
-        help="CSV file with gene list to keep (same as train_fastopic, default: data/gene_list/C2_C5_GO.csv)",
+        default="data/gene_sets/reactome_human_official_genes.csv",
+        help="CSV file with gene list to keep (same as train_fastopic, default: data/gene_sets/reactome_human_official_genes.csv)",
     )
-    parser.add_argument(
+    genept_group = parser.add_mutually_exclusive_group()
+    genept_group.add_argument(
+        "--genept_filter",
+        action="store_true",
+        help="Enable GenePT gene filtering during embedding preprocessing",
+    )
+    genept_group.add_argument(
         "--no_genept_filter",
         action="store_true",
         help="Disable GenePT gene filtering during embedding preprocessing",
@@ -457,7 +461,7 @@ def main() -> None:
         max_cells=args.max_cells,
         n_top_genes=args.n_top_genes,
          # Gene-level preprocessing
-        filter_genept=not args.no_genept_filter,
+        filter_genept=args.genept_filter,
         gene_list_path=args.gene_list_path,
         batch_key=args.batch_key,
         labels_key=args.labels_key,

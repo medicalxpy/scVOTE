@@ -102,7 +102,7 @@ class FastopicConfig:
     theta_temp: float = 2.0
     verbose: bool = True
     seed: int = 42
-    filter_genept: bool = True
+    filter_genept: bool = False
     patience: int = 10
     min_delta: float = 1e-4
     # Structural alignment (Laplacian + CKA)
@@ -119,7 +119,7 @@ class FastopicConfig:
     # HVG selection for single training (0 disables)
     n_top_genes: int = 0
     # Optional gene list filter for single training
-    gene_list_path: Optional[str] = "data/gene_list/C2_C5_GO.csv"
+    gene_list_path: Optional[str] = "data/gene_sets/reactome_human_official_genes.csv"
 
 
 def parse_args():
@@ -164,13 +164,16 @@ def parse_args():
                        help='Quiet mode')
     parser.add_argument('--patience', type=int, default=10,
                        help='Early stopping patience')
-    parser.add_argument('--no_genept_filter', action='store_true',
+    genept_group = parser.add_mutually_exclusive_group()
+    genept_group.add_argument('--genept_filter', action='store_true',
+                       help='Enable GenePT gene filtering')
+    genept_group.add_argument('--no_genept_filter', action='store_true',
                        help='Disable GenePT gene filtering')
     parser.add_argument(
         '--gene_list_path',
         type=str,
-        default='data/gene_list/C2_C5_GO.csv',
-        help='CSV file with gene list to keep (default: data/gene_list/C2_C5_GO.csv)',
+        default='data/gene_sets/reactome_human_official_genes.csv',
+        help='CSV file with gene list to keep (default: data/gene_sets/reactome_human_official_genes.csv)',
     )
     
     # Structural alignment options
@@ -236,7 +239,7 @@ def config_from_args(args: argparse.Namespace) -> FastopicConfig:
         theta_temp=args.theta_temp,
         verbose=not args.quiet,
         seed=args.seed,
-        filter_genept=not args.no_genept_filter,
+        filter_genept=args.genept_filter,
         patience=args.patience,
         align_enable=align_enable,
         align_alpha=args.align_alpha,
